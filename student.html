@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Physics Lab Discussion | 學生作答頁</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-slate-100 text-slate-900">
+    <main class="mx-auto grid max-w-4xl gap-5 p-4">
+      <header class="rounded-lg bg-white p-5 shadow-sm">
+        <p class="text-sm font-semibold text-cyan-700">Student Answer Sheet</p>
+        <h1 id="courseTitle" class="mt-1 text-2xl font-bold">學生作答頁</h1>
+      </header>
+
+      <section class="rounded-lg bg-white p-5 shadow-sm">
+        <h2 class="mb-3 text-lg font-bold">組別選擇</h2>
+        <div class="flex flex-col gap-3 sm:flex-row">
+          <select id="groupSelect" class="flex-1 rounded-lg border border-slate-300 px-3 py-3 text-lg"></select>
+          <button id="confirmGroupButton" class="rounded-lg bg-cyan-700 px-5 py-3 font-bold text-white hover:bg-cyan-800">
+            確認組別
+          </button>
+        </div>
+        <p id="groupHint" class="mt-2 text-sm text-slate-500">請先選擇並確認組別。</p>
+      </section>
+
+      <section class="rounded-lg bg-white p-5 shadow-sm">
+        <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <p class="text-sm font-semibold text-slate-500">目前題目</p>
+            <p id="questionText" class="mt-2 whitespace-pre-wrap text-xl font-semibold leading-relaxed">等待老師發布題目</p>
+          </div>
+          <div class="shrink-0 rounded-lg bg-slate-950 px-4 py-3 text-white">
+            <p class="text-sm text-slate-300">倒數時間</p>
+            <p id="timer" class="font-mono text-4xl font-black">--:--</p>
+            <p id="timerStatus" class="text-sm text-slate-300">尚未開始</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="rounded-lg bg-white p-5 shadow-sm">
+        <h2 class="mb-4 text-lg font-bold">作答區域</h2>
+        <div class="grid gap-4">
+          <label class="grid gap-2">
+            <span class="font-semibold">文字回答</span>
+            <textarea
+              id="answerInput"
+              class="min-h-36 rounded-lg border border-slate-300 px-3 py-2 text-lg disabled:bg-slate-100"
+              placeholder="可使用 LaTeX 語法，例如 $E=mc^2$"
+            ></textarea>
+          </label>
+
+          <label class="grid gap-2">
+            <span class="font-semibold">參考網址</span>
+            <input
+              id="urlInput"
+              type="url"
+              class="rounded-lg border border-slate-300 px-3 py-2 text-lg disabled:bg-slate-100"
+              placeholder="https://example.com"
+            />
+          </label>
+
+          <div>
+            <div class="mb-2 flex items-center justify-between">
+              <span class="font-semibold">簡易畫板</span>
+              <button id="clearCanvasButton" class="rounded-lg border border-slate-300 px-3 py-2 font-semibold hover:bg-slate-50">
+                清除畫板
+              </button>
+            </div>
+            <canvas id="drawingCanvas" width="900" height="420" class="h-auto w-full touch-none rounded-lg border border-slate-300 bg-white"></canvas>
+          </div>
+
+          <button id="submitButton" class="rounded-lg bg-cyan-700 px-5 py-4 text-lg font-bold text-white hover:bg-cyan-800 disabled:bg-slate-400">
+            送出 / 更新答案
+          </button>
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      import { db } from "./firebase-config.js";
+      import {
+        ref,
+        onValue,
+        set,
+        get,
+      } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+      const sessionRef = ref(db, "labSession/current");
+
+      const courseTitle = document.querySelector("#courseTitle");
+      const groupSelect = document.querySelector("#groupSelect");
+      const confirmGroupButton = document.querySelector("#confirmGroupButton");
+      const groupHint = document.querySelector("#groupHint");
+      const questionText = document.querySelector("#questionText");
+      const timer = document.querySelector("#timer");
+      const timerStatus = document.querySelector("#timerStatus");
+      const answerInput = document.querySelector("#answerInput");
+      const urlInput = document.querySelector("#urlInput");
+      const canvas = document.querySelector("#drawingCanvas");
+      const clearCanvasButton = document.querySelector("#clearCanvasButton");
+      const submitButton = document.querySelector("#submitButton");
+      const ctx = canvas.getContext("2d");
+
+      let session = null;
+      let selectedGroup = localStorage.getItem("physicsLabSelectedGroup") || "";
+      let isDrawing = false;
+      let loadedAnswerGroup = "";
+
+      ctx.lineWidth = 4;
+      ctx.lineCap = "round";
+      ctx.strokeStyle = "#0f172a";
+
+      function formatTime(ms) {
+        const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+        const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+        const seconds = String(totalSeconds % 60).padStart(2, "0");
+        return `${minutes}:${seconds}`;
+      }
+
+      function getRemainingMs() {
+        if (!session) return 0;
+        if (session.status === "paused") return session.remainingMs || 0;
+        if (session.status === "locked") return 0;
+        return Math.max(0, (session.endsAt || 0) - Date.now());
+      }
+
+      function isAnswerLocked() {
+        return !session || session.status === "paused" || session.status === "locked" || getRemainingMs() <= 0 || !selectedGroup;
+      }
+
+      function updateDisabledState() {
+        const locked = isAnswerLocked();
+        answerInput.disabled = locked;
+        urlInput.disabled = locked;
+        submitButton.disabled = locked;
+        clearCanvasButton.disabled = locked;
+        canvas.style.pointerEvents = locked ? "none" : "auto";
+      }
+
+      function renderGroups(groupCount) {
+        const previousValue = selectedGroup || groupSelect.value;
+        groupSelect.replaceChildren();
+
+        for (let groupNumber = 1; groupNumber <= groupCount; groupNumber += 1) {
+          const option = document.createElement("option");
+          option.value = `group-${groupNumber}`;
+          option.textContent = `第 ${groupNumber} 組`;
+          groupSelect.append(option);
+        }
+
+        if (previousValue && [...groupSelect.options].some((option) => option.value === previousValue)) {
+          groupSelect.value = previousValue;
+        }
+
+        if (selectedGroup) {
+          groupSelect.disabled = true;
+          confirmGroupButton.disabled = true;
+          groupHint.textContent = `已鎖定為${groupSelect.selectedOptions[0]?.textContent || selectedGroup}`;
+        }
+      }
+
+      async function loadExistingAnswer() {
+        if (!selectedGroup) return;
+        loadedAnswerGroup = selectedGroup;
+        const snapshot = await get(ref(db, `labSession/answers/${selectedGroup}`));
+        const answer = snapshot.val();
+        if (!answer) return;
+
+        answerInput.value = answer.text || "";
+        urlInput.value = answer.url || "";
+
+        if (answer.image && answer.image.startsWith("data:image/")) {
+          const image = new Image();
+          image.onload = () => {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+          };
+          image.src = answer.image;
+        }
+      }
+
+      function updateTimer() {
+        if (!session) {
+          timer.textContent = "--:--";
+          timerStatus.textContent = "等待老師發布";
+          updateDisabledState();
+          return;
+        }
+
+        const remainingMs = getRemainingMs();
+        timer.textContent = formatTime(remainingMs);
+
+        if (session.status === "paused") {
+          timerStatus.textContent = "計時暫停，輸入已凍結";
+        } else if (session.status === "locked" || remainingMs <= 0) {
+          timerStatus.textContent = "作答已鎖定";
+        } else {
+          timerStatus.textContent = "可以作答";
+        }
+
+        updateDisabledState();
+      }
+
+      function getCanvasPoint(event) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        return {
+          x: (event.clientX - rect.left) * scaleX,
+          y: (event.clientY - rect.top) * scaleY,
+        };
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        if (isAnswerLocked()) return;
+        isDrawing = true;
+        canvas.setPointerCapture(event.pointerId);
+        const point = getCanvasPoint(event);
+        ctx.beginPath();
+        ctx.moveTo(point.x, point.y);
+      });
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (!isDrawing || isAnswerLocked()) return;
+        const point = getCanvasPoint(event);
+        ctx.lineTo(point.x, point.y);
+        ctx.stroke();
+      });
+
+      canvas.addEventListener("pointerup", () => {
+        isDrawing = false;
+      });
+
+      canvas.addEventListener("pointercancel", () => {
+        isDrawing = false;
+      });
+
+      clearCanvasButton.addEventListener("click", () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      });
+
+      confirmGroupButton.addEventListener("click", async () => {
+        selectedGroup = groupSelect.value;
+        localStorage.setItem("physicsLabSelectedGroup", selectedGroup);
+        groupSelect.disabled = true;
+        confirmGroupButton.disabled = true;
+        groupHint.textContent = `已鎖定為${groupSelect.selectedOptions[0]?.textContent || selectedGroup}`;
+        await loadExistingAnswer();
+        updateDisabledState();
+      });
+
+      submitButton.addEventListener("click", async () => {
+        if (!selectedGroup || isAnswerLocked()) return;
+        if (!confirm("確定要送出或更新本組答案嗎？")) return;
+
+        await set(ref(db, `labSession/answers/${selectedGroup}`), {
+          text: answerInput.value.trim(),
+          url: urlInput.value.trim(),
+          image: canvas.toDataURL("image/png"),
+          submittedAt: Date.now(),
+        });
+
+        alert("答案已送出。");
+      });
+
+      onValue(sessionRef, (snapshot) => {
+        session = snapshot.val();
+        const groupCount = Number(session?.groupCount || 6);
+
+        courseTitle.textContent = session?.title || "學生作答頁";
+        questionText.textContent = session?.question || "等待老師發布題目";
+        renderGroups(groupCount);
+        if (selectedGroup && loadedAnswerGroup !== selectedGroup) {
+          loadExistingAnswer();
+        }
+        updateTimer();
+      });
+
+      setInterval(updateTimer, 500);
+    </script>
+  </body>
+</html>

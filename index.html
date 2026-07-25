@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Physics Lab Discussion | 大螢幕展示頁</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    />
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    ></script>
+  </head>
+  <body class="min-h-screen bg-slate-950 text-white">
+    <main class="mx-auto flex min-h-screen max-w-7xl flex-col gap-6 p-6">
+      <header class="flex flex-col gap-4 border-b border-white/15 pb-5 md:flex-row md:items-end md:justify-between">
+        <div>
+          <p class="text-sm font-medium uppercase tracking-[0.2em] text-cyan-300">Physics Lab Discussion</p>
+          <h1 id="courseTitle" class="mt-2 text-4xl font-bold md:text-6xl">物理實驗課 - 分組討論</h1>
+        </div>
+        <div class="rounded-lg bg-white px-5 py-4 text-slate-950">
+          <p class="text-sm font-semibold text-slate-500">倒數時間</p>
+          <p id="timer" class="font-mono text-5xl font-black md:text-7xl">--:--</p>
+          <p id="timerStatus" class="mt-1 text-base font-semibold text-slate-600">等待老師發布題目</p>
+        </div>
+      </header>
+
+      <section class="rounded-lg border border-cyan-300/30 bg-cyan-300/10 p-5">
+        <p class="mb-2 text-sm font-semibold text-cyan-200">目前題目</p>
+        <div id="questionText" class="text-2xl font-semibold leading-relaxed md:text-4xl">
+          尚未發布題目
+        </div>
+      </section>
+
+      <section>
+        <div class="mb-4 flex items-center justify-between">
+          <h2 class="text-2xl font-bold">各組回答</h2>
+          <p id="submitCount" class="text-lg font-semibold text-cyan-200">已繳交 0 / 0 組</p>
+        </div>
+        <div id="answersGrid" class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"></div>
+      </section>
+    </main>
+
+    <script type="module">
+      import { db } from "./firebase-config.js";
+      import {
+        ref,
+        onValue,
+      } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+      const sessionRef = ref(db, "labSession/current");
+      const answersRef = ref(db, "labSession/answers");
+
+      const courseTitle = document.querySelector("#courseTitle");
+      const timer = document.querySelector("#timer");
+      const timerStatus = document.querySelector("#timerStatus");
+      const questionText = document.querySelector("#questionText");
+      const answersGrid = document.querySelector("#answersGrid");
+      const submitCount = document.querySelector("#submitCount");
+
+      let session = null;
+      let answers = {};
+
+      function formatTime(ms) {
+        const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+        const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+        const seconds = String(totalSeconds % 60).padStart(2, "0");
+        return `${minutes}:${seconds}`;
+      }
+
+      function getRemainingMs() {
+        if (!session) return 0;
+        if (session.status === "paused") return session.remainingMs || 0;
+        if (session.status === "locked") return 0;
+        return Math.max(0, (session.endsAt || 0) - Date.now());
+      }
+
+      function renderMath(element) {
+        if (!window.renderMathInElement) return;
+        window.renderMathInElement(element, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "$", right: "$", display: false },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "\\[", right: "\\]", display: true },
+          ],
+          throwOnError: false,
+        });
+      }
+
+      function updateTimer() {
+        if (!session) {
+          timer.textContent = "--:--";
+          timerStatus.textContent = "等待老師發布題目";
+          return;
+        }
+
+        const remainingMs = getRemainingMs();
+        timer.textContent = formatTime(remainingMs);
+
+        if (session.status === "paused") {
+          timerStatus.textContent = "計時暫停，作答已凍結";
+        } else if (session.status === "locked" || remainingMs <= 0) {
+          timerStatus.textContent = "作答已鎖定";
+        } else {
+          timerStatus.textContent = "討論進行中";
+        }
+      }
+
+      function renderQuestion() {
+        courseTitle.textContent = session?.title || "物理實驗課 - 分組討論";
+        questionText.textContent = session?.question || "尚未發布題目";
+        renderMath(questionText);
+      }
+
+      function createAnswerCard(groupNumber) {
+        const key = `group-${groupNumber}`;
+        const answer = answers[key] || {};
+        const card = document.createElement("article");
+        card.className = "min-h-64 rounded-lg border border-white/15 bg-white p-5 text-slate-950 shadow-lg";
+
+        const title = document.createElement("h3");
+        title.className = "text-2xl font-black";
+        title.textContent = `第 ${groupNumber} 組`;
+
+        const answerText = document.createElement("div");
+        answerText.className = "mt-4 whitespace-pre-wrap text-xl leading-relaxed";
+        answerText.textContent = answer.text || "尚未送出答案";
+
+        card.append(title, answerText);
+
+        if (answer.url) {
+          const link = document.createElement("a");
+          link.className = "mt-4 inline-block break-all text-base font-semibold text-blue-700 underline";
+          link.href = answer.url;
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.textContent = answer.url;
+          card.append(link);
+        }
+
+        if (answer.image && answer.image.startsWith("data:image/")) {
+          const image = document.createElement("img");
+          image.className = "mt-4 max-h-56 w-full rounded border border-slate-200 object-contain";
+          image.src = answer.image;
+          image.alt = `第 ${groupNumber} 組繪圖板`;
+          card.append(image);
+        }
+
+        renderMath(answerText);
+        return card;
+      }
+
+      function renderAnswers() {
+        const groupCount = Math.max(0, Number(session?.groupCount || 0));
+        answersGrid.replaceChildren();
+
+        for (let groupNumber = 1; groupNumber <= groupCount; groupNumber += 1) {
+          answersGrid.append(createAnswerCard(groupNumber));
+        }
+
+        const submitted = Object.values(answers).filter((answer) => answer?.submittedAt).length;
+        submitCount.textContent = `已繳交 ${submitted} / ${groupCount} 組`;
+      }
+
+      onValue(sessionRef, (snapshot) => {
+        session = snapshot.val();
+        renderQuestion();
+        renderAnswers();
+        updateTimer();
+      });
+
+      onValue(answersRef, (snapshot) => {
+        answers = snapshot.val() || {};
+        renderAnswers();
+      });
+
+      window.addEventListener("load", () => {
+        renderQuestion();
+        renderAnswers();
+      });
+
+      setInterval(updateTimer, 500);
+    </script>
+  </body>
+</html>

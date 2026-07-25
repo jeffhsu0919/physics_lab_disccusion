@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Physics Lab Discussion | 老師控制台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body class="min-h-screen bg-slate-100 text-slate-900">
+    <main class="mx-auto grid max-w-6xl gap-6 p-5 lg:grid-cols-[1.4fr_0.8fr]">
+      <section class="rounded-lg bg-white p-6 shadow-sm">
+        <div class="mb-6">
+          <p class="text-sm font-semibold text-cyan-700">Teacher Console</p>
+          <h1 class="mt-1 text-3xl font-bold">老師控制台</h1>
+        </div>
+
+        <div class="grid gap-5">
+          <label class="grid gap-2">
+            <span class="font-semibold">課程 / 活動標題</span>
+            <input
+              id="titleInput"
+              class="rounded-lg border border-slate-300 px-3 py-2 text-lg"
+              value="實驗課程分組討論"
+            />
+          </label>
+
+          <label class="grid gap-2">
+            <span class="font-semibold">討論題目內容</span>
+            <textarea
+              id="questionInput"
+              class="min-h-40 rounded-lg border border-slate-300 px-3 py-2 text-lg"
+              placeholder="請輸入本次討論題目，例如：請用 $F=ma$ 說明小車受力與加速度的關係。"
+            ></textarea>
+          </label>
+
+          <div class="grid gap-4 sm:grid-cols-2">
+            <label class="grid gap-2">
+              <span class="font-semibold">本節課組數</span>
+              <input id="groupCountInput" type="number" min="1" max="20" value="6" class="rounded-lg border border-slate-300 px-3 py-2 text-lg" />
+            </label>
+
+            <label class="grid gap-2">
+              <span class="font-semibold">討論時間（分鐘）</span>
+              <input id="minutesInput" type="number" min="1" max="120" value="5" class="rounded-lg border border-slate-300 px-3 py-2 text-lg" />
+            </label>
+          </div>
+        </div>
+
+        <div class="mt-6 grid gap-3 sm:grid-cols-2">
+          <button id="startButton" class="rounded-lg bg-cyan-700 px-4 py-3 font-bold text-white hover:bg-cyan-800">
+            發布題目並開始計時
+          </button>
+          <button id="pauseButton" class="rounded-lg bg-amber-500 px-4 py-3 font-bold text-white hover:bg-amber-600">
+            暫停 / 繼續計時
+          </button>
+          <button id="lockButton" class="rounded-lg bg-rose-600 px-4 py-3 font-bold text-white hover:bg-rose-700">
+            提前結束 / 鎖定作答
+          </button>
+          <button id="clearButton" class="rounded-lg bg-slate-700 px-4 py-3 font-bold text-white hover:bg-slate-800">
+            清空題目與回答
+          </button>
+          <button id="downloadButton" class="rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50 sm:col-span-2">
+            下載全組回答 CSV
+          </button>
+        </div>
+      </section>
+
+      <aside class="grid gap-4 content-start">
+        <section class="rounded-lg bg-white p-6 shadow-sm">
+          <p class="text-sm font-semibold text-slate-500">目前狀態</p>
+          <p id="statusText" class="mt-2 text-3xl font-black">尚未開始</p>
+          <p id="remainingText" class="mt-3 font-mono text-5xl font-black text-cyan-700">--:--</p>
+        </section>
+
+        <section class="rounded-lg bg-white p-6 shadow-sm">
+          <p class="text-sm font-semibold text-slate-500">繳交進度</p>
+          <p id="submittedText" class="mt-2 text-4xl font-black">0 / 6</p>
+          <div class="mt-4 h-3 overflow-hidden rounded-full bg-slate-200">
+            <div id="submittedBar" class="h-full w-0 bg-cyan-600"></div>
+          </div>
+        </section>
+      </aside>
+    </main>
+
+    <script type="module">
+      import { db } from "./firebase-config.js";
+      import {
+        ref,
+        onValue,
+        set,
+        update,
+        remove,
+        get,
+      } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+
+      const sessionRef = ref(db, "labSession/current");
+      const answersRef = ref(db, "labSession/answers");
+
+      const titleInput = document.querySelector("#titleInput");
+      const questionInput = document.querySelector("#questionInput");
+      const groupCountInput = document.querySelector("#groupCountInput");
+      const minutesInput = document.querySelector("#minutesInput");
+      const startButton = document.querySelector("#startButton");
+      const pauseButton = document.querySelector("#pauseButton");
+      const lockButton = document.querySelector("#lockButton");
+      const clearButton = document.querySelector("#clearButton");
+      const downloadButton = document.querySelector("#downloadButton");
+      const statusText = document.querySelector("#statusText");
+      const remainingText = document.querySelector("#remainingText");
+      const submittedText = document.querySelector("#submittedText");
+      const submittedBar = document.querySelector("#submittedBar");
+
+      let session = null;
+      let answers = {};
+
+      function formatTime(ms) {
+        const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
+        const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, "0");
+        const seconds = String(totalSeconds % 60).padStart(2, "0");
+        return `${minutes}:${seconds}`;
+      }
+
+      function getRemainingMs() {
+        if (!session) return 0;
+        if (session.status === "paused") return session.remainingMs || 0;
+        if (session.status === "locked") return 0;
+        return Math.max(0, (session.endsAt || 0) - Date.now());
+      }
+
+      function updateDashboard() {
+        const groupCount = Number(session?.groupCount || groupCountInput.value || 6);
+        const submitted = Object.values(answers).filter((answer) => answer?.submittedAt).length;
+        const percent = groupCount > 0 ? Math.min(100, (submitted / groupCount) * 100) : 0;
+
+        submittedText.textContent = `${submitted} / ${groupCount}`;
+        submittedBar.style.width = `${percent}%`;
+        remainingText.textContent = session ? formatTime(getRemainingMs()) : "--:--";
+
+        if (!session) {
+          statusText.textContent = "尚未開始";
+        } else if (session.status === "paused") {
+          statusText.textContent = "計時暫停";
+        } else if (session.status === "locked" || getRemainingMs() <= 0) {
+          statusText.textContent = "作答鎖定";
+        } else {
+          statusText.textContent = "討論進行中";
+        }
+      }
+
+      function sanitizeNumber(value, fallback, min, max) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return fallback;
+        return Math.min(max, Math.max(min, Math.floor(number)));
+      }
+
+      startButton.addEventListener("click", async () => {
+        const title = titleInput.value.trim() || "實驗課程分組討論";
+        const question = questionInput.value.trim();
+        const groupCount = sanitizeNumber(groupCountInput.value, 6, 1, 20);
+        const minutes = sanitizeNumber(minutesInput.value, 5, 1, 120);
+        const durationMs = minutes * 60 * 1000;
+        const now = Date.now();
+
+        await set(sessionRef, {
+          title,
+          question,
+          groupCount,
+          durationMs,
+          status: "running",
+          startedAt: now,
+          endsAt: now + durationMs,
+          remainingMs: durationMs,
+          updatedAt: now,
+        });
+      });
+
+      pauseButton.addEventListener("click", async () => {
+        if (!session) return;
+        const now = Date.now();
+
+        if (session.status === "running") {
+          await update(sessionRef, {
+            status: "paused",
+            remainingMs: getRemainingMs(),
+            pausedAt: now,
+            updatedAt: now,
+          });
+          return;
+        }
+
+        if (session.status === "paused") {
+          const remainingMs = session.remainingMs || 0;
+          await update(sessionRef, {
+            status: "running",
+            endsAt: now + remainingMs,
+            pausedAt: null,
+            updatedAt: now,
+          });
+        }
+      });
+
+      lockButton.addEventListener("click", async () => {
+        if (!session) return;
+        await update(sessionRef, {
+          status: "locked",
+          remainingMs: 0,
+          endsAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      });
+
+      clearButton.addEventListener("click", async () => {
+        if (!confirm("確定要清空目前題目與所有組別回答嗎？")) return;
+        await remove(sessionRef);
+        await remove(answersRef);
+      });
+
+      function csvEscape(value) {
+        return `"${String(value ?? "").replaceAll('"', '""')}"`;
+      }
+
+      downloadButton.addEventListener("click", async () => {
+        const snapshot = await get(answersRef);
+        const currentAnswers = snapshot.val() || {};
+        const rows = [["group", "text", "url", "submittedAt"]];
+
+        Object.entries(currentAnswers).forEach(([group, answer]) => {
+          rows.push([
+            group,
+            answer.text || "",
+            answer.url || "",
+            answer.submittedAt ? new Date(answer.submittedAt).toISOString() : "",
+          ]);
+        });
+
+        const csv = rows.map((row) => row.map(csvEscape).join(",")).join("\n");
+        const blob = new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = `physics-lab-answers-${new Date().toISOString().slice(0, 10)}.csv`;
+        link.click();
+        URL.revokeObjectURL(url);
+      });
+
+      onValue(sessionRef, (snapshot) => {
+        session = snapshot.val();
+
+        if (session) {
+          titleInput.value = session.title || "實驗課程分組討論";
+          questionInput.value = session.question || "";
+          groupCountInput.value = session.groupCount || 6;
+          minutesInput.value = Math.round((session.durationMs || 300000) / 60000);
+        }
+
+        updateDashboard();
+      });
+
+      onValue(answersRef, (snapshot) => {
+        answers = snapshot.val() || {};
+        updateDashboard();
+      });
+
+      setInterval(updateDashboard, 500);
+    </script>
+  </body>
+</html>
