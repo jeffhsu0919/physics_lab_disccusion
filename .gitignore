@@ -1,0 +1,13 @@
+# Google Apps Script files, if they contain private settings
+gas/
+*.gs
+
+# Codex / agent local files
+.agents/
+
+# VS Code local settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db    
