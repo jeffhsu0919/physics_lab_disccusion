@@ -75,6 +75,21 @@
             <div id="groupCodesList" class="mt-4 grid gap-2 sm:grid-cols-2"></div>
             <p id="copyCodesMessage" class="mt-3 text-sm font-semibold text-slate-600"></p>
           </div>
+
+          <div class="lg:col-span-2">
+            <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+              <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 class="text-lg font-bold">大螢幕展示授權</h2>
+                  <p id="displayPairingStatus" class="mt-2 text-sm text-slate-600">等待大螢幕展示頁提出授權要求。</p>
+                  <p id="displayPairingUidText" class="mt-2 hidden select-text break-all font-mono text-sm text-slate-900"></p>
+                </div>
+                <button id="authorizeDisplayButton" class="hidden rounded-lg bg-cyan-700 px-4 py-3 font-bold text-white hover:bg-cyan-800">
+                  授權此大螢幕展示頁
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -198,6 +213,9 @@
       const groupCodesList = document.querySelector("#groupCodesList");
       const copyCodesButton = document.querySelector("#copyCodesButton");
       const copyCodesMessage = document.querySelector("#copyCodesMessage");
+      const displayPairingStatus = document.querySelector("#displayPairingStatus");
+      const displayPairingUidText = document.querySelector("#displayPairingUidText");
+      const authorizeDisplayButton = document.querySelector("#authorizeDisplayButton");
       const titleInput = document.querySelector("#titleInput");
       const questionInput = document.querySelector("#questionInput");
       const groupCountInput = document.querySelector("#groupCountInput");
@@ -219,6 +237,10 @@
       let unsubscribeAnswers = null;
       let unsubscribePrivate = null;
       let databaseAvailable = true;
+      let currentTeacherUser = null;
+      let pendingDisplayPairingRequest = null;
+      let authorizedDisplayPairing = null;
+      const pairingChannel = "BroadcastChannel" in window ? new BroadcastChannel("physics-lab-display-pairing") : null;
 
       function showLoginGate(message) {
         authStatusText.textContent = message;
@@ -261,8 +283,11 @@
         session = null;
         answers = {};
         privateSession = null;
+        pendingDisplayPairingRequest = null;
+        authorizedDisplayPairing = null;
         updateDashboard();
         renderSessionManagement();
+        renderDisplayPairing();
       }
 
       function showDatabasePermissionError(error) {
@@ -287,7 +312,12 @@
           sessionRef,
           (snapshot) => {
             setDatabaseAvailable(true);
+            const previousSessionId = session?.sessionId || "";
             session = snapshot.val();
+            if (previousSessionId && previousSessionId !== session?.sessionId) {
+              pendingDisplayPairingRequest = null;
+              authorizedDisplayPairing = null;
+            }
 
             if (session) {
               titleInput.value = session.title || "實驗課程分組討論";
@@ -298,6 +328,7 @@
 
             updateDashboard();
             renderSessionManagement();
+            renderDisplayPairing();
           },
           showDatabasePermissionError,
         );
@@ -468,6 +499,58 @@
         });
       }
 
+      function isAuthorizedTeacherUser(user = currentTeacherUser) {
+        return Boolean(user?.uid && AUTHORIZED_TEACHER_UIDS.includes(user.uid));
+      }
+
+      function isDisplayPairingRequestValid(request) {
+        return Boolean(
+          request?.type === "display-pairing-request" &&
+          typeof request.displayUid === "string" &&
+          request.displayUid.trim() &&
+          typeof request.sessionId === "string" &&
+          request.sessionId.trim() &&
+          session?.sessionId &&
+          request.sessionId === session.sessionId,
+        );
+      }
+
+      function renderDisplayPairing() {
+        if (!pairingChannel) {
+          displayPairingStatus.textContent = "此瀏覽器不支援大螢幕配對功能，請使用目前版本的 Chrome / Edge。";
+          displayPairingUidText.classList.add("hidden");
+          authorizeDisplayButton.classList.add("hidden");
+          return;
+        }
+
+        if (!session?.sessionId) {
+          displayPairingStatus.textContent = "請先建立課堂場次，再授權大螢幕展示頁。";
+          displayPairingUidText.classList.add("hidden");
+          authorizeDisplayButton.classList.add("hidden");
+          return;
+        }
+
+        if (authorizedDisplayPairing?.sessionId === session.sessionId) {
+          displayPairingStatus.textContent = "已授權本場次大螢幕展示。";
+          displayPairingUidText.textContent = `Display UID：${authorizedDisplayPairing.displayUid}`;
+          displayPairingUidText.classList.remove("hidden");
+          authorizeDisplayButton.classList.add("hidden");
+          return;
+        }
+
+        if (!isDisplayPairingRequestValid(pendingDisplayPairingRequest)) {
+          displayPairingStatus.textContent = "等待大螢幕展示頁提出授權要求。";
+          displayPairingUidText.classList.add("hidden");
+          authorizeDisplayButton.classList.add("hidden");
+          return;
+        }
+
+        displayPairingStatus.textContent = "偵測到本場次的大螢幕展示頁。";
+        displayPairingUidText.textContent = `Display UID：${pendingDisplayPairingRequest.displayUid}`;
+        displayPairingUidText.classList.remove("hidden");
+        authorizeDisplayButton.classList.toggle("hidden", !isAuthorizedTeacherUser());
+      }
+
       function getCurrentSessionPayload(sessionId, sessionCreatedAt, now, groupCount, durationMs) {
         return {
           sessionId,
@@ -531,6 +614,7 @@
         }));
         if (result === null) return;
         sessionActionMessage.textContent = "";
+        renderDisplayPairing();
       });
 
       pauseButton.addEventListener("click", async () => {
@@ -615,8 +699,11 @@
         }));
 
         if (result === null) return;
+        pendingDisplayPairingRequest = null;
+        authorizedDisplayPairing = null;
         sessionActionMessage.textContent = "已建立新場次。";
         copyCodesMessage.textContent = "";
+        renderDisplayPairing();
       });
 
       regenerateCodesButton.addEventListener("click", async () => {
@@ -643,6 +730,38 @@
         if (result === null) return;
         sessionActionMessage.textContent = "已重新產生全部驗證碼，並同步本場次組數。";
         copyCodesMessage.textContent = "";
+      });
+
+      authorizeDisplayButton.addEventListener("click", async () => {
+        if (!isAuthorizedTeacherUser()) {
+          displayPairingStatus.textContent = "目前教師登入狀態無效，無法授權大螢幕展示頁。";
+          renderDisplayPairing();
+          return;
+        }
+
+        if (!isDisplayPairingRequestValid(pendingDisplayPairingRequest)) {
+          displayPairingStatus.textContent = "目前沒有符合本場次的大螢幕展示授權要求。";
+          renderDisplayPairing();
+          return;
+        }
+
+        const { displayUid, sessionId } = pendingDisplayPairingRequest;
+        const result = await runDatabaseAction(() => update(labSessionRef, {
+          [`private/displayMembers/${displayUid}`]: {
+            sessionId,
+            authorizedAt: Date.now(),
+          },
+        }));
+
+        if (result === null) return;
+        authorizedDisplayPairing = { displayUid, sessionId };
+        pendingDisplayPairingRequest = null;
+        renderDisplayPairing();
+        pairingChannel?.postMessage({
+          type: "display-pairing-authorized",
+          displayUid,
+          sessionId,
+        });
       });
 
       copyCodesButton.addEventListener("click", async () => {
@@ -720,7 +839,23 @@
         await signOut(auth);
       });
 
+      pairingChannel?.addEventListener("message", (event) => {
+        if (!isAuthorizedTeacherUser() || !session?.sessionId) return;
+
+        const message = event.data || {};
+        if (!isDisplayPairingRequestValid(message)) return;
+
+        pendingDisplayPairingRequest = {
+          type: "display-pairing-request",
+          displayUid: message.displayUid,
+          sessionId: message.sessionId,
+          requestedAt: message.requestedAt || Date.now(),
+        };
+        renderDisplayPairing();
+      });
+
       onAuthStateChanged(auth, (user) => {
+        currentTeacherUser = user;
         setSignedInInfo(user);
 
         if (!user) {
@@ -739,6 +874,7 @@
 
         showTeacherConsole();
         startDatabaseListeners();
+        renderDisplayPairing();
       });
 
       setInterval(updateDashboard, 500);

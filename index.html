@@ -80,6 +80,7 @@
         persistence: browserLocalPersistence,
       });
       const displayDb = getDatabase(displayApp);
+      const pairingChannel = "BroadcastChannel" in window ? new BroadcastChannel("physics-lab-display-pairing") : null;
 
       const sessionRef = ref(displayDb, "labSession/current");
       const answersRef = ref(displayDb, "labSession/answers");
@@ -95,9 +96,13 @@
 
       let session = null;
       let answers = {};
+      let displayUser = null;
+      let displayAuthorization = null;
       let displayAnonymousSignInInProgress = false;
       let unsubscribeSession = null;
       let unsubscribeAnswers = null;
+      let unsubscribeDisplayAuthorization = null;
+      let lastPairingRequestKey = "";
 
       function setDisplayDataStatus(message) {
         displayDataStatus.textContent = message;
@@ -106,21 +111,39 @@
 
       function stopDisplayDatabaseListeners() {
         unsubscribeSession?.();
-        unsubscribeAnswers?.();
         unsubscribeSession = null;
+        stopAnswersListener();
+        stopDisplayAuthorizationListener();
+      }
+
+      function stopAnswersListener() {
+        unsubscribeAnswers?.();
         unsubscribeAnswers = null;
+        answers = {};
+        renderAnswers();
+      }
+
+      function stopDisplayAuthorizationListener() {
+        unsubscribeDisplayAuthorization?.();
+        unsubscribeDisplayAuthorization = null;
+        displayAuthorization = null;
       }
 
       function startDisplayDatabaseListeners() {
-        if (unsubscribeSession || unsubscribeAnswers) return;
+        if (unsubscribeSession) return;
 
         unsubscribeSession = onValue(
           sessionRef,
           (snapshot) => {
+            const previousSessionId = session?.sessionId || "";
             session = snapshot.val();
+            if (previousSessionId && previousSessionId !== session?.sessionId) {
+              setDisplayDataStatus("新的課堂場次，等待老師重新授權大螢幕展示。");
+            }
             renderQuestion();
             renderAnswers();
             updateTimer();
+            syncDisplayAuthorizationState();
           },
           (error) => {
             console.error("Display current read was denied or failed.", error);
@@ -129,8 +152,31 @@
             renderQuestion();
             renderAnswers();
             updateTimer();
+            syncDisplayAuthorizationState();
           },
         );
+      }
+
+      function startDisplayAuthorizationListener(uid) {
+        if (unsubscribeDisplayAuthorization) return;
+
+        unsubscribeDisplayAuthorization = onValue(
+          ref(displayDb, `labSession/private/displayMembers/${uid}`),
+          (snapshot) => {
+            displayAuthorization = snapshot.val();
+            syncDisplayAuthorizationState();
+          },
+          (error) => {
+            console.error("Unable to read this display authorization.", error);
+            displayAuthorization = null;
+            setDisplayDataStatus("大螢幕展示身分已建立，但目前無法讀取展示授權狀態。");
+            syncDisplayAuthorizationState();
+          },
+        );
+      }
+
+      function startAnswersListener() {
+        if (unsubscribeAnswers) return;
 
         unsubscribeAnswers = onValue(
           answersRef,
@@ -140,12 +186,60 @@
             renderAnswers();
           },
           (error) => {
-            console.info("4A-1 expected state: display anonymous user is not authorized to read labSession/answers yet.", error);
+            console.error("Authorized display could not read labSession/answers.", error);
             answers = {};
-            setDisplayDataStatus("大螢幕展示身分已建立；各組回答權限尚未授權。");
+            setDisplayDataStatus("大螢幕展示已授權，但目前無法讀取各組回答。");
             renderAnswers();
           },
         );
+      }
+
+      function isDisplayAuthorizationValid() {
+        return Boolean(
+          displayUser?.uid &&
+          session?.sessionId &&
+          displayAuthorization?.sessionId === session.sessionId,
+        );
+      }
+
+      function requestDisplayPairingIfNeeded() {
+        if (!pairingChannel || !displayUser?.uid || !session?.sessionId || isDisplayAuthorizationValid()) return;
+
+        const requestKey = `${displayUser.uid}:${session.sessionId}`;
+        if (lastPairingRequestKey === requestKey) return;
+
+        lastPairingRequestKey = requestKey;
+        pairingChannel.postMessage({
+          type: "display-pairing-request",
+          displayUid: displayUser.uid,
+          sessionId: session.sessionId,
+          requestedAt: Date.now(),
+        });
+      }
+
+      function syncDisplayAuthorizationState() {
+        if (!displayUser?.uid) {
+          stopAnswersListener();
+          return;
+        }
+
+        if (!session?.sessionId) {
+          stopAnswersListener();
+          displayAuthStatus.textContent = "大螢幕展示身分已建立，等待老師建立課堂場次。";
+          return;
+        }
+
+        if (isDisplayAuthorizationValid()) {
+          displayAuthStatus.textContent = "大螢幕展示已授權。";
+          setDisplayDataStatus("");
+          startAnswersListener();
+          return;
+        }
+
+        stopAnswersListener();
+        displayAuthStatus.textContent = "大螢幕展示身分已建立，等待老師授權顯示各組回答。";
+        setDisplayDataStatus(pairingChannel ? "已送出本機配對要求，請在老師控制台授權。" : "此瀏覽器不支援大螢幕配對功能，請使用目前版本的 Chrome / Edge。");
+        requestDisplayPairingIfNeeded();
       }
 
       async function ensureDisplayAnonymousAuth() {
@@ -161,6 +255,19 @@
           displayAnonymousSignInInProgress = false;
         }
       }
+
+      pairingChannel?.addEventListener("message", (event) => {
+        const message = event.data || {};
+        if (
+          message.type !== "display-pairing-authorized" ||
+          message.displayUid !== displayUser?.uid ||
+          message.sessionId !== session?.sessionId
+        ) {
+          return;
+        }
+
+        setDisplayDataStatus("已收到老師授權通知，正在等待資料庫確認。");
+      });
 
       function formatTime(ms) {
         const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -266,6 +373,7 @@
 
       onAuthStateChanged(displayAuth, async (user) => {
         if (!user) {
+          displayUser = null;
           displayAuthStatus.textContent = "正在建立大螢幕展示身分...";
           stopDisplayDatabaseListeners();
           await ensureDisplayAnonymousAuth();
@@ -273,6 +381,7 @@
         }
 
         if (!user.isAnonymous) {
+          displayUser = null;
           displayAuthStatus.textContent = "正在重設大螢幕展示身分...";
           stopDisplayDatabaseListeners();
           await signOut(displayAuth);
@@ -280,8 +389,11 @@
           return;
         }
 
+        displayUser = user;
         displayAuthStatus.textContent = "大螢幕展示身分已建立";
+        startDisplayAuthorizationListener(user.uid);
         startDisplayDatabaseListeners();
+        syncDisplayAuthorizationState();
       });
 
       window.addEventListener("load", () => {
