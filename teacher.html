@@ -7,7 +7,77 @@
     <script src="https://cdn.tailwindcss.com"></script>
   </head>
   <body class="min-h-screen bg-slate-100 text-slate-900">
-    <main class="mx-auto grid max-w-6xl gap-6 p-5 lg:grid-cols-[1.4fr_0.8fr]">
+    <section id="authGate" class="mx-auto grid min-h-screen max-w-xl place-items-center p-5">
+      <div class="w-full rounded-lg bg-white p-6 shadow-sm">
+        <p class="text-sm font-semibold text-cyan-700">Physics Lab Discussion</p>
+        <h1 class="mt-1 text-3xl font-bold">老師控制台</h1>
+        <p id="authStatusText" class="mt-4 text-slate-700">正在確認教師登入狀態...</p>
+        <div id="signedInInfo" class="mt-4 hidden rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+          <p id="teacherNameText" class="font-semibold text-slate-900"></p>
+          <p id="teacherEmailText" class="mt-1"></p>
+          <p id="teacherUidText" class="mt-1 break-all font-mono"></p>
+        </div>
+        <div class="mt-6 grid gap-3 sm:grid-cols-2">
+          <button id="googleSignInButton" class="rounded-lg bg-cyan-700 px-4 py-3 font-bold text-white hover:bg-cyan-800">
+            使用 Google 帳號登入
+          </button>
+          <button id="signOutButton" class="hidden rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50">
+            登出
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <main id="appShell" class="mx-auto hidden max-w-6xl gap-6 p-5 lg:grid-cols-[1.4fr_0.8fr]">
+      <section class="rounded-lg bg-white p-6 shadow-sm lg:col-span-2">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p id="consoleTeacherEmailText" class="font-semibold text-slate-900">已登入：</p>
+          <button id="consoleSignOutButton" class="rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50">
+            登出
+          </button>
+        </div>
+        <div id="databaseStatusBanner" class="mt-4 hidden rounded-lg border border-amber-300 bg-amber-50 p-4 text-amber-900">
+          <p class="font-bold">Google Authentication 與教師授權已成功。</p>
+          <p class="mt-1">目前 Realtime Database Rules 尚未開放，因此課程資料暫時無法讀取或寫入。這是目前開發階段的預期狀態。</p>
+        </div>
+      </section>
+
+      <section class="rounded-lg bg-white p-6 shadow-sm lg:col-span-2">
+        <div class="grid gap-5 lg:grid-cols-[1fr_1.2fr]">
+          <div>
+            <p class="text-sm font-semibold text-cyan-700">Session</p>
+            <h2 class="mt-1 text-2xl font-bold">場次管理</h2>
+            <div class="mt-4 grid gap-2 text-sm text-slate-700">
+              <p class="font-semibold">目前場次</p>
+              <p id="sessionIdText" class="select-text break-all font-mono text-base text-slate-900">尚未建立場次</p>
+              <p class="mt-2 font-semibold">建立時間</p>
+              <p id="sessionCreatedAtText">--</p>
+              <p id="sessionNoticeText" class="text-amber-700">請先建立新場次，再發布本堂課題目。</p>
+            </div>
+            <div class="mt-5 grid gap-3 sm:grid-cols-2">
+              <button id="newSessionButton" class="rounded-lg bg-cyan-700 px-4 py-3 font-bold text-white hover:bg-cyan-800">
+                建立新場次
+              </button>
+              <button id="regenerateCodesButton" class="rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50">
+                重新產生全部驗證碼
+              </button>
+            </div>
+            <p id="sessionActionMessage" class="mt-3 text-sm font-semibold text-slate-600"></p>
+          </div>
+
+          <div>
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 class="text-lg font-bold">本場次組別驗證碼</h2>
+              <button id="copyCodesButton" class="rounded-lg border border-slate-300 bg-white px-4 py-2 font-bold text-slate-900 hover:bg-slate-50">
+                複製全部驗證碼
+              </button>
+            </div>
+            <div id="groupCodesList" class="mt-4 grid gap-2 sm:grid-cols-2"></div>
+            <p id="copyCodesMessage" class="mt-3 text-sm font-semibold text-slate-600"></p>
+          </div>
+        </div>
+      </section>
+
       <section class="rounded-lg bg-white p-6 shadow-sm">
         <div class="mb-6">
           <p class="text-sm font-semibold text-cyan-700">Teacher Console</p>
@@ -83,19 +153,51 @@
     </main>
 
     <script type="module">
-      import { db } from "./firebase-config.js";
+      import { auth, db } from "./firebase-config.js";
+      import {
+        GoogleAuthProvider,
+        onAuthStateChanged,
+        signInWithPopup,
+        signOut,
+      } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
       import {
         ref,
         onValue,
-        set,
         update,
-        remove,
         get,
       } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
 
+      const labSessionRef = ref(db, "labSession");
       const sessionRef = ref(db, "labSession/current");
       const answersRef = ref(db, "labSession/answers");
+      const privateRef = ref(db, "labSession/private");
+      const AUTHORIZED_TEACHER_UIDS = [
+        "akdETs5IYlZm7C65Zfh6jAKBBvX2",
+        // 請將授權老師的 Firebase UID 貼在這裡，例如：
+        // "xxxxxxxxxxxxxxxxxxxx",
+      ];
 
+      const authGate = document.querySelector("#authGate");
+      const appShell = document.querySelector("#appShell");
+      const authStatusText = document.querySelector("#authStatusText");
+      const signedInInfo = document.querySelector("#signedInInfo");
+      const teacherNameText = document.querySelector("#teacherNameText");
+      const teacherEmailText = document.querySelector("#teacherEmailText");
+      const teacherUidText = document.querySelector("#teacherUidText");
+      const googleSignInButton = document.querySelector("#googleSignInButton");
+      const signOutButton = document.querySelector("#signOutButton");
+      const consoleTeacherEmailText = document.querySelector("#consoleTeacherEmailText");
+      const consoleSignOutButton = document.querySelector("#consoleSignOutButton");
+      const databaseStatusBanner = document.querySelector("#databaseStatusBanner");
+      const sessionIdText = document.querySelector("#sessionIdText");
+      const sessionCreatedAtText = document.querySelector("#sessionCreatedAtText");
+      const sessionNoticeText = document.querySelector("#sessionNoticeText");
+      const newSessionButton = document.querySelector("#newSessionButton");
+      const regenerateCodesButton = document.querySelector("#regenerateCodesButton");
+      const sessionActionMessage = document.querySelector("#sessionActionMessage");
+      const groupCodesList = document.querySelector("#groupCodesList");
+      const copyCodesButton = document.querySelector("#copyCodesButton");
+      const copyCodesMessage = document.querySelector("#copyCodesMessage");
       const titleInput = document.querySelector("#titleInput");
       const questionInput = document.querySelector("#questionInput");
       const groupCountInput = document.querySelector("#groupCountInput");
@@ -112,6 +214,123 @@
 
       let session = null;
       let answers = {};
+      let privateSession = null;
+      let unsubscribeSession = null;
+      let unsubscribeAnswers = null;
+      let unsubscribePrivate = null;
+      let databaseAvailable = true;
+
+      function showLoginGate(message) {
+        authStatusText.textContent = message;
+        authGate.classList.remove("hidden");
+        appShell.classList.add("hidden");
+        appShell.classList.remove("grid");
+      }
+
+      function showTeacherConsole() {
+        authGate.classList.add("hidden");
+        appShell.classList.remove("hidden");
+        appShell.classList.add("grid");
+      }
+
+      function setSignedInInfo(user) {
+        if (!user) {
+          signedInInfo.classList.add("hidden");
+          teacherNameText.textContent = "";
+          teacherEmailText.textContent = "";
+          teacherUidText.textContent = "";
+          consoleTeacherEmailText.textContent = "已登入：";
+          signOutButton.classList.add("hidden");
+          return;
+        }
+
+        teacherNameText.textContent = user.displayName || "已登入 Google 帳號";
+        teacherEmailText.textContent = `Email：${user.email || "未提供"}`;
+        teacherUidText.textContent = `Firebase UID：${user.uid}`;
+        consoleTeacherEmailText.textContent = `已登入：${user.email || user.displayName || user.uid}`;
+        signedInInfo.classList.remove("hidden");
+        signOutButton.classList.remove("hidden");
+      }
+
+      function setDatabaseAvailable(isAvailable) {
+        databaseAvailable = isAvailable;
+        databaseStatusBanner.classList.toggle("hidden", databaseAvailable);
+      }
+
+      function resetDashboardState() {
+        session = null;
+        answers = {};
+        privateSession = null;
+        updateDashboard();
+        renderSessionManagement();
+      }
+
+      function showDatabasePermissionError(error) {
+        console.error("Authentication passed, but Realtime Database Rules denied access.", error);
+        setDatabaseAvailable(false);
+      }
+
+      function stopDatabaseListeners() {
+        unsubscribeSession?.();
+        unsubscribeAnswers?.();
+        unsubscribePrivate?.();
+        unsubscribeSession = null;
+        unsubscribeAnswers = null;
+        unsubscribePrivate = null;
+        resetDashboardState();
+      }
+
+      function startDatabaseListeners() {
+        stopDatabaseListeners();
+
+        unsubscribeSession = onValue(
+          sessionRef,
+          (snapshot) => {
+            setDatabaseAvailable(true);
+            session = snapshot.val();
+
+            if (session) {
+              titleInput.value = session.title || "實驗課程分組討論";
+              questionInput.value = session.question || "";
+              groupCountInput.value = session.groupCount || 6;
+              minutesInput.value = Math.round((session.durationMs || 300000) / 60000);
+            }
+
+            updateDashboard();
+            renderSessionManagement();
+          },
+          showDatabasePermissionError,
+        );
+
+        unsubscribeAnswers = onValue(
+          answersRef,
+          (snapshot) => {
+            setDatabaseAvailable(true);
+            answers = snapshot.val() || {};
+            updateDashboard();
+          },
+          showDatabasePermissionError,
+        );
+
+        unsubscribePrivate = onValue(
+          privateRef,
+          (snapshot) => {
+            setDatabaseAvailable(true);
+            privateSession = snapshot.val();
+            renderSessionManagement();
+          },
+          showDatabasePermissionError,
+        );
+      }
+
+      async function runDatabaseAction(action) {
+        try {
+          return await action();
+        } catch (error) {
+          showDatabasePermissionError(error);
+          return null;
+        }
+      }
 
       function formatTime(ms) {
         const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -153,15 +372,153 @@
         return Math.min(max, Math.max(min, Math.floor(number)));
       }
 
+      function formatDateTime(timestamp) {
+        if (!timestamp) return "--";
+        return new Intl.DateTimeFormat("zh-TW", {
+          dateStyle: "short",
+          timeStyle: "short",
+        }).format(new Date(timestamp));
+      }
+
+      function generateSessionId() {
+        if (crypto.randomUUID) return crypto.randomUUID();
+
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      }
+
+      function generateSixDigitCode() {
+        const values = new Uint32Array(1);
+        const max = Math.floor(0xffffffff / 900000) * 900000;
+
+        do {
+          crypto.getRandomValues(values);
+        } while (values[0] >= max);
+
+        return String(100000 + (values[0] % 900000));
+      }
+
+      function generateGroupCodes(groupCount) {
+        const usedCodes = new Set();
+        const groupCodes = {};
+
+        for (let groupNumber = 1; groupNumber <= groupCount; groupNumber += 1) {
+          let code = generateSixDigitCode();
+          while (usedCodes.has(code)) {
+            code = generateSixDigitCode();
+          }
+
+          usedCodes.add(code);
+          groupCodes[`group-${groupNumber}`] = code;
+        }
+
+        return groupCodes;
+      }
+
+      function getPrivateGroupCodes() {
+        return privateSession?.groupCodes || {};
+      }
+
+      function getGroupCodeCount() {
+        return Object.keys(getPrivateGroupCodes()).length;
+      }
+
+      function renderSessionManagement() {
+        const sessionId = session?.sessionId || privateSession?.sessionId || "";
+        sessionIdText.textContent = sessionId || "尚未建立場次";
+        sessionCreatedAtText.textContent = formatDateTime(session?.sessionCreatedAt);
+        sessionNoticeText.textContent = sessionId ? "同一場次內發布下一題時，Session ID 與驗證碼會維持不變。" : "請先建立新場次，再發布本堂課題目。";
+        regenerateCodesButton.disabled = !sessionId;
+        copyCodesButton.disabled = getGroupCodeCount() === 0;
+
+        const groupCodes = getPrivateGroupCodes();
+        const entries = Object.entries(groupCodes).sort(([groupA], [groupB]) => {
+          return Number(groupA.replace("group-", "")) - Number(groupB.replace("group-", ""));
+        });
+
+        groupCodesList.replaceChildren();
+
+        if (entries.length === 0) {
+          const emptyText = document.createElement("p");
+          emptyText.className = "text-sm text-slate-500";
+          emptyText.textContent = "尚未建立組別驗證碼。";
+          groupCodesList.append(emptyText);
+          return;
+        }
+
+        entries.forEach(([group, code]) => {
+          const groupNumber = group.replace("group-", "");
+          const item = document.createElement("div");
+          item.className = "flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2";
+
+          const label = document.createElement("span");
+          label.className = "font-semibold text-slate-700";
+          label.textContent = `第 ${groupNumber} 組`;
+
+          const codeText = document.createElement("span");
+          codeText.className = "select-text font-mono text-xl font-black text-slate-950";
+          codeText.textContent = code;
+
+          item.append(label, codeText);
+          groupCodesList.append(item);
+        });
+      }
+
+      function getCurrentSessionPayload(sessionId, sessionCreatedAt, now, groupCount, durationMs) {
+        return {
+          sessionId,
+          sessionCreatedAt,
+          title: titleInput.value.trim() || "實驗課程分組討論",
+          question: "",
+          groupCount,
+          durationMs,
+          status: "locked",
+          startedAt: null,
+          endsAt: null,
+          remainingMs: 0,
+          updatedAt: now,
+        };
+      }
+
+      function getCodesText() {
+        const entries = Object.entries(getPrivateGroupCodes()).sort(([groupA], [groupB]) => {
+          return Number(groupA.replace("group-", "")) - Number(groupB.replace("group-", ""));
+        });
+
+        return [
+          "Physics Lab Discussion 組別驗證碼",
+          "",
+          ...entries.map(([group, code]) => `第 ${group.replace("group-", "")} 組：${code}`),
+        ].join("\n");
+      }
+
       startButton.addEventListener("click", async () => {
+        if (!session?.sessionId) {
+          sessionActionMessage.textContent = "請先建立本堂課場次。";
+          return;
+        }
+
         const title = titleInput.value.trim() || "實驗課程分組討論";
         const question = questionInput.value.trim();
         const groupCount = sanitizeNumber(groupCountInput.value, 6, 1, 20);
+        const codeCount = getGroupCodeCount();
+
+        if (groupCount !== codeCount) {
+          sessionActionMessage.textContent = `目前組數已由 ${codeCount} 組改為 ${groupCount} 組。請先按「重新產生全部驗證碼」，讓本場次的組別設定與驗證碼同步後，再發布題目。`;
+          return;
+        }
+
         const minutes = sanitizeNumber(minutesInput.value, 5, 1, 120);
         const durationMs = minutes * 60 * 1000;
         const now = Date.now();
 
-        await set(sessionRef, {
+        const result = await runDatabaseAction(() => update(sessionRef, {
+          sessionId: session.sessionId,
+          sessionCreatedAt: session.sessionCreatedAt,
           title,
           question,
           groupCount,
@@ -171,7 +528,9 @@
           endsAt: now + durationMs,
           remainingMs: durationMs,
           updatedAt: now,
-        });
+        }));
+        if (result === null) return;
+        sessionActionMessage.textContent = "";
       });
 
       pauseButton.addEventListener("click", async () => {
@@ -179,40 +538,121 @@
         const now = Date.now();
 
         if (session.status === "running") {
-          await update(sessionRef, {
+          await runDatabaseAction(() => update(sessionRef, {
             status: "paused",
             remainingMs: getRemainingMs(),
             pausedAt: now,
             updatedAt: now,
-          });
+          }));
           return;
         }
 
         if (session.status === "paused") {
           const remainingMs = session.remainingMs || 0;
-          await update(sessionRef, {
+          await runDatabaseAction(() => update(sessionRef, {
             status: "running",
             endsAt: now + remainingMs,
             pausedAt: null,
             updatedAt: now,
-          });
+          }));
         }
       });
 
       lockButton.addEventListener("click", async () => {
         if (!session) return;
-        await update(sessionRef, {
+        await runDatabaseAction(() => update(sessionRef, {
           status: "locked",
           remainingMs: 0,
           endsAt: Date.now(),
           updatedAt: Date.now(),
-        });
+        }));
       });
 
       clearButton.addEventListener("click", async () => {
+        if (!session?.sessionId) {
+          sessionActionMessage.textContent = "尚未建立場次，沒有可清空的題目與回答。";
+          return;
+        }
+
         if (!confirm("確定要清空目前題目與所有組別回答嗎？")) return;
-        await remove(sessionRef);
-        await remove(answersRef);
+        const result = await runDatabaseAction(() => update(labSessionRef, {
+          "current/question": "",
+          "current/status": "locked",
+          "current/startedAt": null,
+          "current/endsAt": null,
+          "current/remainingMs": 0,
+          "current/updatedAt": Date.now(),
+          answers: null,
+        }));
+        if (result === null) return;
+        sessionActionMessage.textContent = "已清空題目與回答，Session 與驗證碼已保留。";
+      });
+
+      newSessionButton.addEventListener("click", async () => {
+        const hasSession = Boolean(session?.sessionId);
+        const message = hasSession
+          ? "建立新場次會：\n\n1. 結束目前場次\n2. 產生新的 Session ID\n3. 重新產生全部組別驗證碼\n4. 清除目前所有組別回答\n\n目前場次驗證碼將失效。\n\n確定建立新場次嗎？"
+          : "建立新場次會產生 Session ID 與全部組別驗證碼。\n\n確定建立新場次嗎？";
+
+        if (!confirm(message)) return;
+
+        const now = Date.now();
+        const groupCount = sanitizeNumber(groupCountInput.value, 6, 1, 20);
+        const minutes = sanitizeNumber(minutesInput.value, 5, 1, 120);
+        const durationMs = minutes * 60 * 1000;
+        const sessionId = generateSessionId();
+        const groupCodes = generateGroupCodes(groupCount);
+
+        const result = await runDatabaseAction(() => update(labSessionRef, {
+          current: getCurrentSessionPayload(sessionId, now, now, groupCount, durationMs),
+          answers: null,
+          private: {
+            sessionId,
+            codesUpdatedAt: now,
+            groupCodes,
+            members: null,
+          },
+        }));
+
+        if (result === null) return;
+        sessionActionMessage.textContent = "已建立新場次。";
+        copyCodesMessage.textContent = "";
+      });
+
+      regenerateCodesButton.addEventListener("click", async () => {
+        if (!session?.sessionId) {
+          sessionActionMessage.textContent = "請先建立本堂課場次。";
+          return;
+        }
+
+        if (!confirm("重新產生後，舊驗證碼將立即失效。\n\n確定重新產生本場次所有組別驗證碼嗎？")) return;
+
+        const now = Date.now();
+        const groupCount = sanitizeNumber(groupCountInput.value, 6, 1, 20);
+        const groupCodes = generateGroupCodes(groupCount);
+
+        const result = await runDatabaseAction(() => update(labSessionRef, {
+          "current/groupCount": groupCount,
+          "current/updatedAt": now,
+          "private/sessionId": session.sessionId,
+          "private/codesUpdatedAt": now,
+          "private/groupCodes": groupCodes,
+          "private/members": null,
+        }));
+
+        if (result === null) return;
+        sessionActionMessage.textContent = "已重新產生全部驗證碼，並同步本場次組數。";
+        copyCodesMessage.textContent = "";
+      });
+
+      copyCodesButton.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(getCodesText());
+          copyCodesMessage.textContent = "已複製全部驗證碼";
+        } catch (error) {
+          console.error("Failed to copy group codes.", error);
+          copyCodesMessage.textContent = "無法複製驗證碼，請確認瀏覽器是否允許 Clipboard API。";
+        }
       });
 
       function csvEscape(value) {
@@ -220,7 +660,8 @@
       }
 
       downloadButton.addEventListener("click", async () => {
-        const snapshot = await get(answersRef);
+        const snapshot = await runDatabaseAction(() => get(answersRef));
+        if (!snapshot) return;
         const currentAnswers = snapshot.val() || {};
         const rows = [["group", "text", "url", "submittedAt"]];
 
@@ -243,22 +684,61 @@
         URL.revokeObjectURL(url);
       });
 
-      onValue(sessionRef, (snapshot) => {
-        session = snapshot.val();
+      googleSignInButton.addEventListener("click", async () => {
+        const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({
+          prompt: "select_account",
+        });
 
-        if (session) {
-          titleInput.value = session.title || "實驗課程分組討論";
-          questionInput.value = session.question || "";
-          groupCountInput.value = session.groupCount || 6;
-          minutesInput.value = Math.round((session.durationMs || 300000) / 60000);
+        googleSignInButton.disabled = true;
+        googleSignInButton.textContent = "登入中...";
+
+        try {
+          await signInWithPopup(auth, provider);
+        } catch (error) {
+          const messages = {
+            "auth/popup-closed-by-user": "登入視窗已關閉，請重新點選登入。",
+            "auth/popup-blocked": "登入彈出視窗被瀏覽器阻擋，請允許彈出視窗後再試一次。",
+            "auth/network-request-failed": "網路連線失敗，請確認連線後再試一次。",
+            "auth/unauthorized-domain": "目前網域未列入 Firebase Authorized domains，請到 Firebase Console 加入此網域。",
+          };
+
+          authStatusText.textContent = messages[error.code] || `Google 登入失敗：${error.message}`;
+        } finally {
+          googleSignInButton.disabled = false;
+          googleSignInButton.textContent = "使用 Google 帳號登入";
         }
-
-        updateDashboard();
       });
 
-      onValue(answersRef, (snapshot) => {
-        answers = snapshot.val() || {};
-        updateDashboard();
+      signOutButton.addEventListener("click", async () => {
+        stopDatabaseListeners();
+        await signOut(auth);
+      });
+
+      consoleSignOutButton.addEventListener("click", async () => {
+        stopDatabaseListeners();
+        await signOut(auth);
+      });
+
+      onAuthStateChanged(auth, (user) => {
+        setSignedInInfo(user);
+
+        if (!user) {
+          stopDatabaseListeners();
+          setDatabaseAvailable(true);
+          showLoginGate("請使用授權的 Google 帳號登入。");
+          return;
+        }
+
+        if (!AUTHORIZED_TEACHER_UIDS.includes(user.uid)) {
+          stopDatabaseListeners();
+          setDatabaseAvailable(true);
+          showLoginGate("這個 Google 帳號尚未授權使用老師控制台。請將上方 Firebase UID 加入 teacher.html 的 AUTHORIZED_TEACHER_UIDS。");
+          return;
+        }
+
+        showTeacherConsole();
+        startDatabaseListeners();
       });
 
       setInterval(updateDashboard, 500);

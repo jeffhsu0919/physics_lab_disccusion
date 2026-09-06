@@ -13,12 +13,45 @@
         <h1 id="courseTitle" class="mt-1 text-2xl font-bold">學生作答頁</h1>
       </header>
 
+      <section class="rounded-lg bg-white p-4 shadow-sm">
+        <p id="authStatusTitle" class="font-bold text-slate-900">正在建立學生裝置驗證...</p>
+        <p id="authStatusDetail" class="mt-1 text-sm text-slate-600"></p>
+        <p id="studentUidText" class="mt-2 hidden select-text break-all font-mono text-sm text-slate-700"></p>
+        <div id="databaseStatusBox" class="mt-3 hidden rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+          <p id="databaseStatusTitle" class="font-bold">資料狀態</p>
+          <p id="databaseStatusDetail" class="mt-1"></p>
+        </div>
+      </section>
+
       <section class="rounded-lg bg-white p-5 shadow-sm">
         <h2 class="mb-3 text-lg font-bold">組別選擇</h2>
-        <div class="flex flex-col gap-3 sm:flex-row">
-          <select id="groupSelect" class="flex-1 rounded-lg border border-slate-300 px-3 py-3 text-lg"></select>
-          <button id="confirmGroupButton" class="rounded-lg bg-cyan-700 px-5 py-3 font-bold text-white hover:bg-cyan-800">
-            確認組別
+        <div class="grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
+          <label class="grid gap-2">
+            <span class="font-semibold">組別</span>
+            <select id="groupSelect" class="rounded-lg border border-slate-300 px-3 py-3 text-lg disabled:bg-slate-100"></select>
+          </label>
+          <label class="grid gap-2">
+            <span class="font-semibold">組別驗證碼</span>
+            <input
+              id="groupCodeInput"
+              type="text"
+              inputmode="numeric"
+              maxlength="6"
+              autocomplete="off"
+              class="rounded-lg border border-slate-300 px-3 py-3 text-lg disabled:bg-slate-100"
+              placeholder="6 位數驗證碼"
+            />
+          </label>
+          <button id="confirmGroupButton" class="self-end rounded-lg bg-cyan-700 px-5 py-3 font-bold text-white hover:bg-cyan-800 disabled:bg-slate-400">
+            驗證並確認組別
+          </button>
+        </div>
+        <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+          <button id="changeGroupButton" class="hidden rounded-lg border border-slate-300 bg-white px-4 py-2 font-bold text-slate-900 hover:bg-slate-50">
+            更換組別
+          </button>
+          <button id="cancelChangeGroupButton" class="hidden rounded-lg border border-slate-300 bg-white px-4 py-2 font-bold text-slate-900 hover:bg-slate-50">
+            取消更換
           </button>
         </div>
         <p id="groupHint" class="mt-2 text-sm text-slate-500">請先選擇並確認組別。</p>
@@ -78,7 +111,11 @@
     </main>
 
     <script type="module">
-      import { db } from "./firebase-config.js";
+      import { auth, db } from "./firebase-config.js";
+      import {
+        onAuthStateChanged,
+        signInAnonymously,
+      } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
       import {
         ref,
         onValue,
@@ -88,9 +125,18 @@
 
       const sessionRef = ref(db, "labSession/current");
 
+      const authStatusTitle = document.querySelector("#authStatusTitle");
+      const authStatusDetail = document.querySelector("#authStatusDetail");
+      const studentUidText = document.querySelector("#studentUidText");
+      const databaseStatusBox = document.querySelector("#databaseStatusBox");
+      const databaseStatusTitle = document.querySelector("#databaseStatusTitle");
+      const databaseStatusDetail = document.querySelector("#databaseStatusDetail");
       const courseTitle = document.querySelector("#courseTitle");
       const groupSelect = document.querySelector("#groupSelect");
+      const groupCodeInput = document.querySelector("#groupCodeInput");
       const confirmGroupButton = document.querySelector("#confirmGroupButton");
+      const changeGroupButton = document.querySelector("#changeGroupButton");
+      const cancelChangeGroupButton = document.querySelector("#cancelChangeGroupButton");
       const groupHint = document.querySelector("#groupHint");
       const questionText = document.querySelector("#questionText");
       const timer = document.querySelector("#timer");
@@ -101,11 +147,21 @@
       const clearCanvasButton = document.querySelector("#clearCanvasButton");
       const submitButton = document.querySelector("#submitButton");
       const ctx = canvas.getContext("2d");
+      const STUDENT_BINDING_STORAGE_KEY = "physicsLabStudentBinding";
 
       let session = null;
-      let selectedGroup = localStorage.getItem("physicsLabSelectedGroup") || "";
+      let currentUser = null;
+      let activeMember = null;
+      let selectedGroup = "";
       let isDrawing = false;
       let loadedAnswerGroup = "";
+      let studentAuthReady = false;
+      let anonymousSignInInProgress = false;
+      let databaseAvailable = true;
+      let unsubscribeMember = null;
+      let memberListenerUid = "";
+      let changeGroupMode = false;
+      let groupVerificationPending = false;
 
       ctx.lineWidth = 4;
       ctx.lineCap = "round";
@@ -126,16 +182,236 @@
       }
 
       function isAnswerLocked() {
-        return !session || session.status === "paused" || session.status === "locked" || getRemainingMs() <= 0 || !selectedGroup;
+        return !studentAuthReady || changeGroupMode || !isActiveMemberValid() || !session || session.status === "paused" || session.status === "locked" || getRemainingMs() <= 0;
       }
 
       function updateDisabledState() {
         const locked = isAnswerLocked();
+        const sessionReady = Boolean(session?.sessionId);
+        const canVerifyGroup = studentAuthReady && sessionReady && !groupVerificationPending && (!isActiveMemberValid() || changeGroupMode);
+
+        groupSelect.disabled = !canVerifyGroup;
+        groupCodeInput.disabled = !canVerifyGroup;
+        confirmGroupButton.disabled = !canVerifyGroup;
+        changeGroupButton.classList.toggle("hidden", !isActiveMemberValid() || changeGroupMode);
+        cancelChangeGroupButton.classList.toggle("hidden", !isActiveMemberValid() || !changeGroupMode);
         answerInput.disabled = locked;
         urlInput.disabled = locked;
         submitButton.disabled = locked;
         clearCanvasButton.disabled = locked;
         canvas.style.pointerEvents = locked ? "none" : "auto";
+      }
+
+      function setDatabaseAvailable(isAvailable) {
+        databaseAvailable = isAvailable;
+        databaseStatusBox.classList.toggle("hidden", databaseAvailable || !studentAuthReady);
+      }
+
+      function showDatabaseStatus(title, detail) {
+        databaseStatusTitle.textContent = title;
+        databaseStatusDetail.textContent = detail;
+        databaseAvailable = false;
+        databaseStatusBox.classList.remove("hidden");
+      }
+
+      function showAuthInitializing() {
+        studentAuthReady = false;
+        authStatusTitle.textContent = "正在建立學生裝置驗證...";
+        authStatusDetail.textContent = "";
+        studentUidText.textContent = "";
+        studentUidText.classList.add("hidden");
+        databaseStatusBox.classList.add("hidden");
+        stopMemberListener();
+        updateDisabledState();
+      }
+
+      function showAnonymousAuthReady(user) {
+        currentUser = user;
+        studentAuthReady = true;
+        authStatusTitle.textContent = "學生裝置驗證完成";
+        authStatusDetail.textContent = "請選擇組別並輸入本場次驗證碼。";
+        studentUidText.textContent = `Firebase UID：${user.uid}`;
+        studentUidText.classList.remove("hidden");
+        setDatabaseAvailable(databaseAvailable);
+        startMemberListener(user.uid);
+        applySessionAndMemberState();
+        updateDisabledState();
+      }
+
+      function showAnonymousAuthError(error) {
+        const messages = {
+          "auth/operation-not-allowed": "Firebase Anonymous Authentication 尚未啟用，請到 Firebase Console 開啟匿名登入。",
+          "auth/network-request-failed": "網路連線失敗，請確認連線後重新整理頁面。",
+        };
+
+        studentAuthReady = false;
+        authStatusTitle.textContent = "無法建立學生裝置驗證。";
+        authStatusDetail.textContent = messages[error.code] || `錯誤資訊：${error.message}`;
+        studentUidText.textContent = "";
+        studentUidText.classList.add("hidden");
+        databaseStatusBox.classList.add("hidden");
+        stopMemberListener();
+        updateDisabledState();
+      }
+
+      function showNonAnonymousUserConflict(user) {
+        currentUser = null;
+        studentAuthReady = false;
+        authStatusTitle.textContent = "目前瀏覽器已有 Google 登入身分。";
+        authStatusDetail.textContent = `目前身分：${user.email || user.displayName || user.uid}。學生頁需要使用匿名學生身分。測試時請使用無痕視窗、其他瀏覽器，或另一個瀏覽器使用者設定檔開啟學生頁。`;
+        studentUidText.textContent = "";
+        studentUidText.classList.add("hidden");
+        databaseStatusBox.classList.add("hidden");
+        stopMemberListener();
+        updateDisabledState();
+      }
+
+      function showDatabasePermissionError(error) {
+        console.error("Student Authentication passed, but Realtime Database Rules denied access.", error);
+        showDatabaseStatus("資料讀取受限", "目前無法讀取課堂資料，請確認老師是否已套用本階段的 Database Rules。");
+      }
+
+      async function runDatabaseAction(action) {
+        try {
+          return await action();
+        } catch (error) {
+          showDatabasePermissionError(error);
+          return null;
+        }
+      }
+
+      function clearAnswerFields() {
+        answerInput.value = "";
+        urlInput.value = "";
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+
+      function getCachedBinding() {
+        try {
+          return JSON.parse(localStorage.getItem(STUDENT_BINDING_STORAGE_KEY) || "null");
+        } catch {
+          return null;
+        }
+      }
+
+      function setCachedBinding(member) {
+        if (!member?.sessionId || !member?.groupId) return;
+        localStorage.setItem(STUDENT_BINDING_STORAGE_KEY, JSON.stringify({
+          sessionId: member.sessionId,
+          groupId: member.groupId,
+        }));
+      }
+
+      function clearCachedBinding() {
+        localStorage.removeItem(STUDENT_BINDING_STORAGE_KEY);
+        localStorage.removeItem("physicsLabSelectedGroup");
+      }
+
+      function getGroupLabel(groupId) {
+        const groupNumber = String(groupId || "").replace("group-", "");
+        return groupNumber ? `第 ${groupNumber} 組` : "未選擇組別";
+      }
+
+      function isSelectableGroup(groupId) {
+        return [...groupSelect.options].some((option) => option.value === groupId);
+      }
+
+      function isActiveMemberValid() {
+        return Boolean(
+          studentAuthReady &&
+          session?.sessionId &&
+          activeMember?.sessionId === session.sessionId &&
+          activeMember?.groupId &&
+          activeMember.groupId === selectedGroup,
+        );
+      }
+
+      function applySessionAndMemberState() {
+        if (!session?.sessionId) {
+          selectedGroup = "";
+          loadedAnswerGroup = "";
+          changeGroupMode = false;
+          groupVerificationPending = false;
+          clearCachedBinding();
+          clearAnswerFields();
+          groupHint.textContent = "老師尚未建立本次課堂場次。";
+          authStatusDetail.textContent = studentAuthReady ? "老師尚未建立本次課堂場次。" : authStatusDetail.textContent;
+          updateDisabledState();
+          return;
+        }
+
+        if (activeMember?.sessionId === session.sessionId && activeMember?.groupId) {
+          const groupChanged = selectedGroup !== activeMember.groupId;
+          selectedGroup = activeMember.groupId;
+          changeGroupMode = false;
+          groupVerificationPending = false;
+          groupSelect.value = isSelectableGroup(selectedGroup) ? selectedGroup : groupSelect.value;
+          groupCodeInput.value = "";
+          groupHint.textContent = `本場次已驗證：${getGroupLabel(selectedGroup)}`;
+          authStatusDetail.textContent = "學生裝置驗證完成。";
+          setCachedBinding(activeMember);
+
+          if (groupChanged) {
+            loadedAnswerGroup = "";
+            clearAnswerFields();
+          }
+
+          if (loadedAnswerGroup !== selectedGroup) {
+            loadExistingAnswer(selectedGroup);
+          }
+
+          updateDisabledState();
+          return;
+        }
+
+        const hadSelectedGroup = Boolean(selectedGroup);
+        const hasStaleMember = Boolean(activeMember);
+        selectedGroup = "";
+        loadedAnswerGroup = "";
+        changeGroupMode = false;
+        groupVerificationPending = false;
+        if (hadSelectedGroup || activeMember) clearAnswerFields();
+
+        const cachedBinding = getCachedBinding();
+        if (cachedBinding?.sessionId === session.sessionId && cachedBinding?.groupId && isSelectableGroup(cachedBinding.groupId)) {
+          groupSelect.value = cachedBinding.groupId;
+        }
+
+        clearCachedBinding();
+        groupHint.textContent = hasStaleMember || hadSelectedGroup ? "新的課堂場次，請重新驗證組別。" : "學生裝置驗證完成，請選擇組別並輸入本場次驗證碼。";
+        authStatusDetail.textContent = "請選擇組別並輸入本場次驗證碼。";
+        updateDisabledState();
+      }
+
+      function stopMemberListener() {
+        unsubscribeMember?.();
+        unsubscribeMember = null;
+        memberListenerUid = "";
+        currentUser = null;
+        activeMember = null;
+        selectedGroup = "";
+        loadedAnswerGroup = "";
+        changeGroupMode = false;
+        groupVerificationPending = false;
+      }
+
+      function startMemberListener(uid) {
+        if (unsubscribeMember && memberListenerUid === uid) return;
+        unsubscribeMember?.();
+        unsubscribeMember = null;
+        memberListenerUid = uid;
+
+        unsubscribeMember = onValue(
+          ref(db, `labSession/private/members/${uid}`),
+          (snapshot) => {
+            activeMember = snapshot.val();
+            applySessionAndMemberState();
+          },
+          (error) => {
+            console.error("Unable to read this student's member binding.", error);
+            showDatabaseStatus("組別驗證狀態無法讀取", "目前無法讀取本裝置的組別驗證狀態，請重新整理後再試一次。");
+          },
+        );
       }
 
       function renderGroups(groupCount) {
@@ -153,19 +429,34 @@
           groupSelect.value = previousValue;
         }
 
-        if (selectedGroup) {
-          groupSelect.disabled = true;
-          confirmGroupButton.disabled = true;
-          groupHint.textContent = `已鎖定為${groupSelect.selectedOptions[0]?.textContent || selectedGroup}`;
+        if (previousValue && [...groupSelect.options].some((option) => option.value === previousValue)) {
+          groupSelect.value = previousValue;
         }
+
+        applySessionAndMemberState();
       }
 
-      async function loadExistingAnswer() {
-        if (!selectedGroup) return;
-        loadedAnswerGroup = selectedGroup;
-        const snapshot = await get(ref(db, `labSession/answers/${selectedGroup}`));
+      async function loadExistingAnswer(groupId = selectedGroup) {
+        if (!groupId || !isActiveMemberValid()) return;
+        const requestGroup = groupId;
+        loadedAnswerGroup = requestGroup;
+        let snapshot = null;
+
+        try {
+          snapshot = await get(ref(db, `labSession/answers/${requestGroup}`));
+        } catch (error) {
+          console.error("Unable to load this group's answer.", error);
+          groupHint.textContent = "目前無法讀取本組答案，請重新確認組別驗證狀態。";
+          updateDisabledState();
+          return;
+        }
+
+        if (!snapshot || selectedGroup !== requestGroup || loadedAnswerGroup !== requestGroup) return;
         const answer = snapshot.val();
-        if (!answer) return;
+        if (!answer) {
+          clearAnswerFields();
+          return;
+        }
 
         answerInput.value = answer.text || "";
         urlInput.value = answer.url || "";
@@ -173,6 +464,7 @@
         if (answer.image && answer.image.startsWith("data:image/")) {
           const image = new Image();
           image.onload = () => {
+            if (selectedGroup !== requestGroup || loadedAnswerGroup !== requestGroup) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
           };
@@ -240,42 +532,137 @@
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       });
 
+      groupCodeInput.addEventListener("input", () => {
+        groupCodeInput.value = groupCodeInput.value.replace(/\D/g, "").slice(0, 6);
+      });
+
       confirmGroupButton.addEventListener("click", async () => {
-        selectedGroup = groupSelect.value;
-        localStorage.setItem("physicsLabSelectedGroup", selectedGroup);
-        groupSelect.disabled = true;
+        if (!studentAuthReady || !currentUser?.isAnonymous) return;
+        if (!session?.sessionId) {
+          groupHint.textContent = "老師尚未建立本次課堂場次。";
+          return;
+        }
+
+        const groupId = groupSelect.value;
+        const code = groupCodeInput.value.trim();
+
+        if (!isSelectableGroup(groupId)) {
+          groupHint.textContent = "請選擇有效的組別。";
+          return;
+        }
+
+        if (!/^\d{6}$/.test(code)) {
+          groupHint.textContent = "請輸入 6 位數組別驗證碼。";
+          return;
+        }
+
         confirmGroupButton.disabled = true;
-        groupHint.textContent = `已鎖定為${groupSelect.selectedOptions[0]?.textContent || selectedGroup}`;
-        await loadExistingAnswer();
+        confirmGroupButton.textContent = "正在驗證組別...";
+        groupVerificationPending = true;
+        groupHint.textContent = "驗證已送出，正在確認組別狀態...";
+
+        try {
+          await set(ref(db, `labSession/private/members/${currentUser.uid}`), {
+            sessionId: session.sessionId,
+            groupId,
+            code,
+            boundAt: Date.now(),
+          });
+          groupCodeInput.value = "";
+        } catch (error) {
+          console.error("Group verification was rejected.", error);
+          groupVerificationPending = false;
+          groupHint.textContent = changeGroupMode ? "新組別或驗證碼不正確，請確認後再試一次。" : "組別或驗證碼不正確，或老師已建立新的課堂場次，請重新確認。";
+        } finally {
+          confirmGroupButton.textContent = "驗證並確認組別";
+          updateDisabledState();
+        }
+      });
+
+      changeGroupButton.addEventListener("click", () => {
+        if (!isActiveMemberValid()) return;
+        if (!confirm("確定要更換組別嗎？\n\n更換後需要輸入新組別的驗證碼。\n\n原組已送出的答案不會因此刪除。")) return;
+        changeGroupMode = true;
+        groupVerificationPending = false;
+        groupCodeInput.value = "";
+        groupHint.textContent = "請輸入新組驗證碼。";
+        updateDisabledState();
+      });
+
+      cancelChangeGroupButton.addEventListener("click", () => {
+        changeGroupMode = false;
+        groupVerificationPending = false;
+        groupCodeInput.value = "";
+        if (activeMember?.groupId && isSelectableGroup(activeMember.groupId)) {
+          groupSelect.value = activeMember.groupId;
+        }
+        groupHint.textContent = `本場次已驗證：${getGroupLabel(selectedGroup)}`;
         updateDisabledState();
       });
 
       submitButton.addEventListener("click", async () => {
-        if (!selectedGroup || isAnswerLocked()) return;
+        if (!isActiveMemberValid() || isAnswerLocked()) return;
         if (!confirm("確定要送出或更新本組答案嗎？")) return;
 
-        await set(ref(db, `labSession/answers/${selectedGroup}`), {
-          text: answerInput.value.trim(),
-          url: urlInput.value.trim(),
-          image: canvas.toDataURL("image/png"),
-          submittedAt: Date.now(),
-        });
+        try {
+          await set(ref(db, `labSession/answers/${selectedGroup}`), {
+            text: answerInput.value.trim(),
+            url: urlInput.value.trim(),
+            image: canvas.toDataURL("image/png"),
+            submittedAt: Date.now(),
+          });
+        } catch (error) {
+          console.error("Unable to submit answer.", error);
+          groupHint.textContent = "目前無法送出答案。可能原因：作答已暫停、時間已結束，或組別驗證已失效。";
+          updateDisabledState();
+          return;
+        }
 
         alert("答案已送出。");
       });
 
-      onValue(sessionRef, (snapshot) => {
-        session = snapshot.val();
-        const groupCount = Number(session?.groupCount || 6);
+      onAuthStateChanged(auth, async (user) => {
+        if (!user) {
+          currentUser = null;
+          showAuthInitializing();
 
-        courseTitle.textContent = session?.title || "學生作答頁";
-        questionText.textContent = session?.question || "等待老師發布題目";
-        renderGroups(groupCount);
-        if (selectedGroup && loadedAnswerGroup !== selectedGroup) {
-          loadExistingAnswer();
+          if (anonymousSignInInProgress) return;
+          anonymousSignInInProgress = true;
+
+          try {
+            await signInAnonymously(auth);
+          } catch (error) {
+            showAnonymousAuthError(error);
+          } finally {
+            anonymousSignInInProgress = false;
+          }
+
+          return;
         }
-        updateTimer();
+
+        if (!user.isAnonymous) {
+          showNonAnonymousUserConflict(user);
+          return;
+        }
+
+        showAnonymousAuthReady(user);
       });
+
+      onValue(
+        sessionRef,
+        (snapshot) => {
+          setDatabaseAvailable(true);
+          session = snapshot.val();
+          const groupCount = Number(session?.groupCount || 6);
+
+          courseTitle.textContent = session?.title || "學生作答頁";
+          questionText.textContent = session?.question || "等待老師發布題目";
+          renderGroups(groupCount);
+          applySessionAndMemberState();
+          updateTimer();
+        },
+        showDatabasePermissionError,
+      );
 
       setInterval(updateTimer, 500);
     </script>
