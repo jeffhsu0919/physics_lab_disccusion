@@ -118,7 +118,7 @@
             ></textarea>
           </label>
 
-          <div class="grid gap-4 sm:grid-cols-2">
+          <div class="grid gap-4 sm:grid-cols-3">
             <label class="grid gap-2">
               <span class="font-semibold">本節課組數</span>
               <input id="groupCountInput" type="number" min="1" max="20" value="6" class="rounded-lg border border-slate-300 px-3 py-2 text-lg" />
@@ -127,6 +127,11 @@
             <label class="grid gap-2">
               <span class="font-semibold">討論時間（分鐘）</span>
               <input id="minutesInput" type="number" min="1" max="120" value="5" class="rounded-lg border border-slate-300 px-3 py-2 text-lg" />
+            </label>
+
+            <label class="grid gap-2">
+              <span class="font-semibold">文字回答字元上限</span>
+              <input id="answerCharLimitInput" type="number" min="1" max="5000" value="500" class="rounded-lg border border-slate-300 px-3 py-2 text-lg" />
             </label>
           </div>
         </div>
@@ -220,6 +225,7 @@
       const questionInput = document.querySelector("#questionInput");
       const groupCountInput = document.querySelector("#groupCountInput");
       const minutesInput = document.querySelector("#minutesInput");
+      const answerCharLimitInput = document.querySelector("#answerCharLimitInput");
       const startButton = document.querySelector("#startButton");
       const pauseButton = document.querySelector("#pauseButton");
       const lockButton = document.querySelector("#lockButton");
@@ -324,6 +330,7 @@
               questionInput.value = session.question || "";
               groupCountInput.value = session.groupCount || 6;
               minutesInput.value = Math.round((session.durationMs || 300000) / 60000);
+              answerCharLimitInput.value = sanitizeNumber(session.answerCharLimit, 500, 1, 5000);
             }
 
             updateDashboard();
@@ -559,6 +566,7 @@
           question: "",
           groupCount,
           durationMs,
+          answerCharLimit: sanitizeNumber(answerCharLimitInput.value, 500, 1, 5000),
           status: "locked",
           startedAt: null,
           endsAt: null,
@@ -596,6 +604,7 @@
         }
 
         const minutes = sanitizeNumber(minutesInput.value, 5, 1, 120);
+        const answerCharLimit = sanitizeNumber(answerCharLimitInput.value, 500, 1, 5000);
         const durationMs = minutes * 60 * 1000;
         const now = Date.now();
 
@@ -606,6 +615,7 @@
           question,
           groupCount,
           durationMs,
+          answerCharLimit,
           status: "running",
           startedAt: now,
           endsAt: now + durationMs,

@@ -75,10 +75,14 @@
         <h2 class="mb-4 text-lg font-bold">作答區域</h2>
         <div class="grid gap-4">
           <label class="grid gap-2">
-            <span class="font-semibold">文字回答</span>
+            <span class="flex items-center justify-between gap-3">
+              <span class="font-semibold">文字回答</span>
+              <span id="answerCharCount" class="text-sm font-semibold text-slate-500">0 / 500 字元</span>
+            </span>
             <textarea
               id="answerInput"
               class="min-h-36 rounded-lg border border-slate-300 px-3 py-2 text-lg disabled:bg-slate-100"
+              maxlength="500"
               placeholder="可使用 LaTeX 語法，例如 $E=mc^2$"
             ></textarea>
           </label>
@@ -142,6 +146,7 @@
       const timer = document.querySelector("#timer");
       const timerStatus = document.querySelector("#timerStatus");
       const answerInput = document.querySelector("#answerInput");
+      const answerCharCount = document.querySelector("#answerCharCount");
       const urlInput = document.querySelector("#urlInput");
       const canvas = document.querySelector("#drawingCanvas");
       const clearCanvasButton = document.querySelector("#clearCanvasButton");
@@ -185,10 +190,30 @@
         return !studentAuthReady || changeGroupMode || !isActiveMemberValid() || !session || session.status === "paused" || session.status === "locked" || getRemainingMs() <= 0;
       }
 
+      function getAnswerCharLimit() {
+        const limit = Number(session?.answerCharLimit);
+        if (!Number.isFinite(limit)) return 500;
+        return Math.min(5000, Math.max(1, Math.floor(limit)));
+      }
+
+      function isAnswerTextOverLimit() {
+        return answerInput.value.length > getAnswerCharLimit();
+      }
+
+      function updateAnswerCharState() {
+        const limit = getAnswerCharLimit();
+        const count = answerInput.value.length;
+        answerInput.maxLength = limit;
+        answerCharCount.textContent = `${count} / ${limit} 字元`;
+        answerCharCount.classList.toggle("text-rose-600", count > limit);
+        answerCharCount.classList.toggle("text-slate-500", count <= limit);
+      }
+
       function updateDisabledState() {
         const locked = isAnswerLocked();
         const sessionReady = Boolean(session?.sessionId);
         const canVerifyGroup = studentAuthReady && sessionReady && !groupVerificationPending && (!isActiveMemberValid() || changeGroupMode);
+        const answerTextOverLimit = isAnswerTextOverLimit();
 
         groupSelect.disabled = !canVerifyGroup;
         groupCodeInput.disabled = !canVerifyGroup;
@@ -197,9 +222,10 @@
         cancelChangeGroupButton.classList.toggle("hidden", !isActiveMemberValid() || !changeGroupMode);
         answerInput.disabled = locked;
         urlInput.disabled = locked;
-        submitButton.disabled = locked;
+        submitButton.disabled = locked || answerTextOverLimit;
         clearCanvasButton.disabled = locked;
         canvas.style.pointerEvents = locked ? "none" : "auto";
+        updateAnswerCharState();
       }
 
       function setDatabaseAvailable(isAvailable) {
@@ -284,6 +310,7 @@
         answerInput.value = "";
         urlInput.value = "";
         ctx.clearRect(0, 0, canvas.width, canvas.height);
+        updateDisabledState();
       }
 
       function getCachedBinding() {
@@ -460,6 +487,8 @@
 
         answerInput.value = answer.text || "";
         urlInput.value = answer.url || "";
+        updateAnswerCharState();
+        updateDisabledState();
 
         if (answer.image && answer.image.startsWith("data:image/")) {
           const image = new Image();
@@ -536,6 +565,11 @@
         groupCodeInput.value = groupCodeInput.value.replace(/\D/g, "").slice(0, 6);
       });
 
+      answerInput.addEventListener("input", () => {
+        updateAnswerCharState();
+        updateDisabledState();
+      });
+
       confirmGroupButton.addEventListener("click", async () => {
         if (!studentAuthReady || !currentUser?.isAnonymous) return;
         if (!session?.sessionId) {
@@ -602,6 +636,11 @@
 
       submitButton.addEventListener("click", async () => {
         if (!isActiveMemberValid() || isAnswerLocked()) return;
+        if (isAnswerTextOverLimit()) {
+          groupHint.textContent = `文字回答已超過 ${getAnswerCharLimit()} 字元上限，請先縮短內容。`;
+          updateDisabledState();
+          return;
+        }
         if (!confirm("確定要送出或更新本組答案嗎？")) return;
 
         try {
@@ -657,6 +696,7 @@
 
           courseTitle.textContent = session?.title || "學生作答頁";
           questionText.textContent = session?.question || "等待老師發布題目";
+          updateAnswerCharState();
           renderGroups(groupCount);
           applySessionAndMemberState();
           updateTimer();
