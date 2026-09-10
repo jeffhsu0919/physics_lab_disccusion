@@ -59,6 +59,41 @@
       </section>
     </main>
 
+    <div
+      id="answerModal"
+      class="fixed inset-0 z-50 hidden bg-slate-950/80 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="answerModalTitle"
+    >
+      <div class="flex min-h-full items-center justify-center">
+        <section id="answerModalPanel" class="max-h-[90vh] w-full max-w-6xl overflow-y-auto rounded-lg bg-white p-6 text-slate-950 shadow-2xl">
+          <div class="mb-5 flex flex-col gap-4 border-b border-slate-200 pb-4 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 id="answerModalTitle" class="text-4xl font-black">第 1 組</h2>
+              <p id="answerModalPosition" class="mt-2 text-lg font-semibold text-slate-500">第 1 組 / 共 1 組</p>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button id="previousAnswerModalButton" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-lg font-bold text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">
+                上一組
+              </button>
+              <button id="nextAnswerModalButton" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-lg font-bold text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40">
+                下一組
+              </button>
+              <button id="closeAnswerModalButton" class="rounded-lg border border-slate-300 bg-white px-4 py-2 text-lg font-bold text-slate-900 hover:bg-slate-50">
+                關閉
+              </button>
+            </div>
+          </div>
+          <div id="answerModalText" class="whitespace-pre-wrap text-3xl font-semibold leading-relaxed"></div>
+          <a id="answerModalUrl" class="mt-6 hidden break-all text-2xl font-bold text-blue-700 underline" target="_blank" rel="noopener noreferrer"></a>
+          <div id="answerModalImageWrap" class="mt-6 hidden rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <img id="answerModalImage" class="max-h-[60vh] w-full object-contain" alt="" />
+          </div>
+        </section>
+      </div>
+    </div>
+
     <script type="module">
       import { app as defaultApp } from "./firebase-config.js";
       import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
@@ -93,6 +128,17 @@
       const questionText = document.querySelector("#questionText");
       const answersGrid = document.querySelector("#answersGrid");
       const submitCount = document.querySelector("#submitCount");
+      const answerModal = document.querySelector("#answerModal");
+      const answerModalPanel = document.querySelector("#answerModalPanel");
+      const answerModalTitle = document.querySelector("#answerModalTitle");
+      const answerModalPosition = document.querySelector("#answerModalPosition");
+      const answerModalText = document.querySelector("#answerModalText");
+      const answerModalUrl = document.querySelector("#answerModalUrl");
+      const answerModalImageWrap = document.querySelector("#answerModalImageWrap");
+      const answerModalImage = document.querySelector("#answerModalImage");
+      const previousAnswerModalButton = document.querySelector("#previousAnswerModalButton");
+      const nextAnswerModalButton = document.querySelector("#nextAnswerModalButton");
+      const closeAnswerModalButton = document.querySelector("#closeAnswerModalButton");
 
       let session = null;
       let answers = {};
@@ -103,6 +149,8 @@
       let unsubscribeAnswers = null;
       let unsubscribeDisplayAuthorization = null;
       let lastPairingRequestKey = "";
+      let openModalGroupNumber = null;
+      let lastModalTriggerElement = null;
 
       function setDisplayDataStatus(message) {
         displayDataStatus.textContent = message;
@@ -120,6 +168,7 @@
         unsubscribeAnswers?.();
         unsubscribeAnswers = null;
         answers = {};
+        closeAnswerModal();
         renderAnswers();
       }
 
@@ -138,6 +187,7 @@
             const previousSessionId = session?.sessionId || "";
             session = snapshot.val();
             if (previousSessionId && previousSessionId !== session?.sessionId) {
+              closeAnswerModal();
               setDisplayDataStatus("新的課堂場次，等待老師重新授權大螢幕展示。");
             }
             renderQuestion();
@@ -148,6 +198,7 @@
           (error) => {
             console.error("Display current read was denied or failed.", error);
             session = null;
+            closeAnswerModal();
             setDisplayDataStatus("大螢幕展示身分已建立；目前無法讀取課堂題目資料。");
             renderQuestion();
             renderAnswers();
@@ -188,6 +239,7 @@
           (error) => {
             console.error("Authorized display could not read labSession/answers.", error);
             answers = {};
+            closeAnswerModal();
             setDisplayDataStatus("大螢幕展示已授權，但目前無法讀取各組回答。");
             renderAnswers();
           },
@@ -321,11 +373,102 @@
         renderMath(questionText);
       }
 
+      function getGroupCount() {
+        return Math.max(0, Number(session?.groupCount || 0));
+      }
+
+      function renderAnswerModal(groupNumber) {
+        const key = `group-${groupNumber}`;
+        const answer = answers[key] || {};
+        const groupCount = getGroupCount();
+
+        answerModalTitle.textContent = `第 ${groupNumber} 組`;
+        answerModalPosition.textContent = `第 ${groupNumber} 組 / 共 ${groupCount} 組`;
+        previousAnswerModalButton.disabled = groupNumber <= 1;
+        nextAnswerModalButton.disabled = groupNumber >= groupCount;
+        answerModalText.textContent = answer.text || "尚未送出答案";
+        renderMath(answerModalText);
+
+        if (answer.url) {
+          answerModalUrl.href = answer.url;
+          answerModalUrl.textContent = answer.url;
+          answerModalUrl.classList.remove("hidden");
+        } else {
+          answerModalUrl.href = "";
+          answerModalUrl.textContent = "";
+          answerModalUrl.classList.add("hidden");
+        }
+
+        if (answer.image && answer.image.startsWith("data:image/")) {
+          answerModalImage.src = answer.image;
+          answerModalImage.alt = `第 ${groupNumber} 組繪圖板`;
+          answerModalImageWrap.classList.remove("hidden");
+        } else {
+          answerModalImage.removeAttribute("src");
+          answerModalImage.alt = "";
+          answerModalImageWrap.classList.add("hidden");
+        }
+      }
+
+      function openAnswerModal(groupNumber, triggerElement = null) {
+        openModalGroupNumber = groupNumber;
+        lastModalTriggerElement = triggerElement;
+        renderAnswerModal(groupNumber);
+        answerModal.classList.remove("hidden");
+        document.body.classList.add("overflow-hidden");
+        closeAnswerModalButton.focus();
+      }
+
+      function closeAnswerModal() {
+        if (openModalGroupNumber === null && answerModal.classList.contains("hidden")) return;
+        openModalGroupNumber = null;
+        answerModal.classList.add("hidden");
+        document.body.classList.remove("overflow-hidden");
+        if (lastModalTriggerElement?.isConnected) {
+          lastModalTriggerElement.focus();
+        }
+        lastModalTriggerElement = null;
+      }
+
+      function navigateAnswerModal(offset) {
+        if (openModalGroupNumber === null) return;
+
+        const groupCount = getGroupCount();
+        if (groupCount <= 0) return;
+
+        const targetGroupNumber = openModalGroupNumber + offset;
+        if (targetGroupNumber < 1 || targetGroupNumber > groupCount) return;
+
+        openModalGroupNumber = targetGroupNumber;
+        renderAnswerModal(openModalGroupNumber);
+      }
+
+      function isEditableEventTarget(target) {
+        return Boolean(
+          target?.closest?.("input, textarea, select") ||
+          target?.closest?.("[contenteditable='true']") ||
+          target?.isContentEditable,
+        );
+      }
+
       function createAnswerCard(groupNumber) {
         const key = `group-${groupNumber}`;
         const answer = answers[key] || {};
         const card = document.createElement("article");
-        card.className = "min-h-64 rounded-lg border border-white/15 bg-white p-5 text-slate-950 shadow-lg";
+        card.className = "min-h-64 cursor-pointer rounded-lg border border-white/15 bg-white p-5 text-slate-950 shadow-lg transition hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-4 focus:ring-cyan-300";
+        card.tabIndex = 0;
+        card.role = "button";
+        card.setAttribute("aria-label", `開啟第 ${groupNumber} 組完整回答`);
+        card.addEventListener("click", (event) => {
+          if (event.target.closest("a")) return;
+          openAnswerModal(groupNumber, card);
+        });
+        card.addEventListener("keydown", (event) => {
+          if (event.target.closest("a")) return;
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          openAnswerModal(groupNumber, card);
+        });
 
         const title = document.createElement("h3");
         title.className = "text-2xl font-black";
@@ -344,6 +487,9 @@
           link.target = "_blank";
           link.rel = "noopener noreferrer";
           link.textContent = answer.url;
+          link.addEventListener("click", (event) => {
+            event.stopPropagation();
+          });
           card.append(link);
         }
 
@@ -369,7 +515,53 @@
 
         const submitted = Object.values(answers).filter((answer) => answer?.submittedAt).length;
         submitCount.textContent = `已繳交 ${submitted} / ${groupCount} 組`;
+        if (openModalGroupNumber !== null) {
+          if (openModalGroupNumber < 1 || openModalGroupNumber > groupCount) {
+            closeAnswerModal();
+            return;
+          }
+          renderAnswerModal(openModalGroupNumber);
+        }
       }
+
+      previousAnswerModalButton.addEventListener("click", () => {
+        navigateAnswerModal(-1);
+      });
+
+      nextAnswerModalButton.addEventListener("click", () => {
+        navigateAnswerModal(1);
+      });
+
+      closeAnswerModalButton.addEventListener("click", closeAnswerModal);
+
+      answerModal.addEventListener("click", (event) => {
+        if (!answerModalPanel.contains(event.target)) {
+          closeAnswerModal();
+        }
+      });
+
+      answerModalPanel.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+
+      window.addEventListener("keydown", (event) => {
+        if (openModalGroupNumber === null) return;
+
+        if (event.key === "Escape") {
+          closeAnswerModal();
+          return;
+        }
+
+        if (isEditableEventTarget(event.target)) return;
+
+        if (event.key === "ArrowLeft") {
+          event.preventDefault();
+          navigateAnswerModal(-1);
+        } else if (event.key === "ArrowRight") {
+          event.preventDefault();
+          navigateAnswerModal(1);
+        }
+      });
 
       onAuthStateChanged(displayAuth, async (user) => {
         if (!user) {
