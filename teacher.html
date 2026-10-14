@@ -5,6 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Physics Lab Discussion | 老師控制台</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+    />
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script
+      defer
+      src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    ></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   </head>
   <body class="min-h-screen bg-slate-100 text-slate-900">
     <section id="authGate" class="mx-auto grid min-h-screen max-w-xl place-items-center p-5">
@@ -149,9 +160,13 @@
           <button id="clearButton" class="rounded-lg bg-slate-700 px-4 py-3 font-bold text-white hover:bg-slate-800">
             清空題目與回答
           </button>
-          <button id="downloadButton" class="rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50 sm:col-span-2">
+          <button id="downloadButton" class="rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50">
             下載全組回答 CSV
           </button>
+          <button id="downloadPdfButton" class="rounded-lg border border-slate-300 bg-white px-4 py-3 font-bold text-slate-900 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">
+            下載全組回答 PDF
+          </button>
+          <p id="exportMessage" class="text-sm font-semibold text-slate-600 sm:col-span-2"></p>
         </div>
       </section>
 
@@ -192,7 +207,7 @@
       const answersRef = ref(db, "labSession/answers");
       const privateRef = ref(db, "labSession/private");
       const AUTHORIZED_TEACHER_UIDS = [
-        "akdETs5IYlZm7C65Zfh6jAKBBvX2",
+        "s3lkmvogxBYg3IrNam8oPaH1GIX2",
         // 請將授權老師的 Firebase UID 貼在這裡，例如：
         // "xxxxxxxxxxxxxxxxxxxx",
       ];
@@ -231,6 +246,8 @@
       const lockButton = document.querySelector("#lockButton");
       const clearButton = document.querySelector("#clearButton");
       const downloadButton = document.querySelector("#downloadButton");
+      const downloadPdfButton = document.querySelector("#downloadPdfButton");
+      const exportMessage = document.querySelector("#exportMessage");
       const statusText = document.querySelector("#statusText");
       const remainingText = document.querySelector("#remainingText");
       const submittedText = document.querySelector("#submittedText");
@@ -788,14 +805,273 @@
         return `"${String(value ?? "").replaceAll('"', '""')}"`;
       }
 
+      function renderMath(element) {
+        if (!window.renderMathInElement) return;
+        window.renderMathInElement(element, {
+          delimiters: [
+            { left: "$$", right: "$$", display: true },
+            { left: "$", right: "$", display: false },
+            { left: "\\(", right: "\\)", display: false },
+            { left: "\\[", right: "\\]", display: true },
+          ],
+          throwOnError: false,
+        });
+      }
+
+      function createPdfTextBlock(label, value) {
+        const wrapper = document.createElement("section");
+        wrapper.style.marginTop = "18px";
+
+        const title = document.createElement("p");
+        title.textContent = label;
+        title.style.margin = "0 0 8px";
+        title.style.fontSize = "16px";
+        title.style.fontWeight = "800";
+        title.style.color = "#334155";
+
+        const body = document.createElement("div");
+        body.textContent = value;
+        body.style.whiteSpace = "pre-wrap";
+        body.style.overflowWrap = "anywhere";
+        body.style.fontSize = "22px";
+        body.style.lineHeight = "1.55";
+        body.style.color = "#0f172a";
+
+        wrapper.append(title, body);
+        renderMath(body);
+        return wrapper;
+      }
+
+      function createPdfGroupPage(groupNumber, answer) {
+        const page = document.createElement("article");
+        page.style.boxSizing = "border-box";
+        page.style.width = "794px";
+        page.style.minHeight = "1123px";
+        page.style.padding = "42px";
+        page.style.background = "#ffffff";
+        page.style.color = "#0f172a";
+        page.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+
+        const header = document.createElement("header");
+        header.style.borderBottom = "2px solid #e2e8f0";
+        header.style.paddingBottom = "18px";
+
+        const title = document.createElement("h1");
+        title.textContent = session?.title || "實驗課程分組討論";
+        title.style.margin = "0";
+        title.style.fontSize = "30px";
+        title.style.lineHeight = "1.25";
+        title.style.fontWeight = "900";
+
+        const questionLabel = document.createElement("p");
+        questionLabel.textContent = "討論題目";
+        questionLabel.style.margin = "22px 0 8px";
+        questionLabel.style.fontSize = "16px";
+        questionLabel.style.fontWeight = "800";
+        questionLabel.style.color = "#334155";
+
+        const question = document.createElement("div");
+        question.textContent = session?.question || "";
+        question.style.whiteSpace = "pre-wrap";
+        question.style.overflowWrap = "anywhere";
+        question.style.fontSize = "20px";
+        question.style.lineHeight = "1.5";
+        renderMath(question);
+
+        header.append(title, questionLabel, question);
+
+        const groupTitle = document.createElement("h2");
+        groupTitle.textContent = `第 ${groupNumber} 組`;
+        groupTitle.style.margin = "28px 0 0";
+        groupTitle.style.fontSize = "34px";
+        groupTitle.style.lineHeight = "1.2";
+        groupTitle.style.fontWeight = "900";
+
+        const answerText = createPdfTextBlock("文字回答", answer?.text || "尚未送出答案");
+        page.append(header, groupTitle, answerText);
+
+        if (answer?.url) {
+          const urlSection = createPdfTextBlock("參考網址", answer.url);
+          page.append(urlSection);
+        }
+
+        if (answer?.image && answer.image.startsWith("data:image/")) {
+          const imageSection = document.createElement("section");
+          imageSection.dataset.pdfImageWrap = "true";
+          imageSection.style.marginTop = "20px";
+
+          const imageLabel = document.createElement("p");
+          imageLabel.textContent = "Canvas 繪圖";
+          imageLabel.style.margin = "0 0 8px";
+          imageLabel.style.fontSize = "16px";
+          imageLabel.style.fontWeight = "800";
+          imageLabel.style.color = "#334155";
+
+          const image = document.createElement("img");
+          image.src = answer.image;
+          image.alt = `第 ${groupNumber} 組 Canvas 繪圖`;
+          image.style.display = "block";
+          image.style.maxWidth = "100%";
+          image.style.maxHeight = "440px";
+          image.style.objectFit = "contain";
+          image.style.border = "1px solid #cbd5e1";
+          image.style.borderRadius = "8px";
+
+          imageSection.append(imageLabel, image);
+          page.append(imageSection);
+        }
+
+        const footer = document.createElement("footer");
+        footer.style.marginTop = "24px";
+        footer.style.borderTop = "1px solid #e2e8f0";
+        footer.style.paddingTop = "14px";
+        footer.style.fontSize = "14px";
+        footer.style.lineHeight = "1.6";
+        footer.style.color = "#475569";
+
+        const submittedAt = document.createElement("p");
+        submittedAt.textContent = `送出時間：${answer?.submittedAt ? formatDateTime(answer.submittedAt) : "--"}`;
+        submittedAt.style.margin = "0";
+
+        const sessionId = document.createElement("p");
+        sessionId.textContent = `Session ID：${session?.sessionId || ""}`;
+        sessionId.style.margin = "4px 0 0";
+        sessionId.style.overflowWrap = "anywhere";
+
+        footer.append(submittedAt, sessionId);
+        page.append(footer);
+
+        return page;
+      }
+
+      async function waitForPdfPageAssets(page) {
+        if (document.fonts?.ready) {
+          await document.fonts.ready;
+        }
+
+        const images = [...page.querySelectorAll("img")];
+        await Promise.all(images.map(async (image) => {
+          try {
+            if (image.decode) {
+              await image.decode();
+              return;
+            }
+
+            if (image.complete && image.naturalWidth > 0) return;
+
+            await new Promise((resolve, reject) => {
+              image.addEventListener("load", resolve, { once: true });
+              image.addEventListener("error", reject, { once: true });
+            });
+          } catch (error) {
+            console.warn("PDF export skipped an image that could not be loaded.", error);
+            image.closest("[data-pdf-image-wrap='true']")?.remove();
+          }
+        }));
+      }
+
+      async function downloadAnswersPdf() {
+        const html2canvas = window.html2canvas;
+        const JsPDF = window.jspdf?.jsPDF;
+
+        if (!html2canvas || !JsPDF) {
+          console.error("PDF libraries are not available.", { html2canvas, jspdf: window.jspdf });
+          exportMessage.textContent = "PDF 元件載入失敗，請重新整理頁面後再試。";
+          return;
+        }
+
+        const groupCount = Math.max(0, Number(session?.groupCount || 0));
+        if (groupCount <= 0) {
+          exportMessage.textContent = "尚未建立場次，無法產生 PDF。";
+          return;
+        }
+
+        const originalPdfButtonText = downloadPdfButton.textContent;
+        let pdfContainer = null;
+
+        downloadPdfButton.disabled = true;
+        downloadPdfButton.textContent = "PDF 產生中...";
+
+        try {
+          exportMessage.textContent = "正在讀取回答資料...";
+          const snapshot = await runDatabaseAction(() => get(answersRef));
+          if (!snapshot) {
+            exportMessage.textContent = "目前無法讀取回答資料，PDF 未產生。";
+            return;
+          }
+          const currentAnswers = snapshot.val() || {};
+          const pdf = new JsPDF({
+            orientation: "portrait",
+            unit: "mm",
+            format: "a4",
+          });
+          const pageWidth = 210;
+          const pageHeight = 297;
+          const margin = 12;
+          const maxWidth = pageWidth - margin * 2;
+          const maxHeight = pageHeight - margin * 2;
+
+          pdfContainer = document.createElement("div");
+          pdfContainer.style.position = "fixed";
+          pdfContainer.style.left = "-10000px";
+          pdfContainer.style.top = "0";
+          pdfContainer.style.width = "794px";
+          pdfContainer.style.background = "#ffffff";
+          document.body.append(pdfContainer);
+
+          for (let groupNumber = 1; groupNumber <= groupCount; groupNumber += 1) {
+            exportMessage.textContent = `正在產生第 ${groupNumber} / ${groupCount} 組...`;
+            const answer = currentAnswers[`group-${groupNumber}`] || null;
+            const pdfPage = createPdfGroupPage(groupNumber, answer);
+            pdfContainer.replaceChildren(pdfPage);
+            await waitForPdfPageAssets(pdfPage);
+
+            const canvas = await html2canvas(pdfPage, {
+              scale: 2,
+              backgroundColor: "#ffffff",
+            });
+            const imageData = canvas.toDataURL("image/png");
+            const sourceWidthMm = pdfPage.offsetWidth * 0.264583;
+            const sourceHeightMm = pdfPage.offsetHeight * 0.264583;
+            const scale = Math.min(maxWidth / sourceWidthMm, maxHeight / sourceHeightMm);
+            const renderWidth = sourceWidthMm * scale;
+            const renderHeight = sourceHeightMm * scale;
+            const x = (pageWidth - renderWidth) / 2;
+            const y = margin;
+
+            if (groupNumber > 1) {
+              pdf.addPage();
+            }
+
+            pdf.addImage(imageData, "PNG", x, y, renderWidth, renderHeight);
+          }
+
+          pdf.save(`physics-lab-answers-${new Date().toISOString().slice(0, 10)}.pdf`);
+          exportMessage.textContent = "PDF 已下載。";
+        } catch (error) {
+          console.error("PDF export failed.", error);
+          exportMessage.textContent = "PDF 產生失敗，請查看 Console。";
+        } finally {
+          pdfContainer?.remove();
+          downloadPdfButton.disabled = false;
+          downloadPdfButton.textContent = originalPdfButtonText;
+        }
+      }
+
       downloadButton.addEventListener("click", async () => {
         const snapshot = await runDatabaseAction(() => get(answersRef));
         if (!snapshot) return;
         const currentAnswers = snapshot.val() || {};
-        const rows = [["group", "text", "url", "submittedAt"]];
+        const rows = [["sessionId", "title", "question", "group", "text", "url", "submittedAt"]];
+        const entries = Object.entries(currentAnswers).sort(([groupA], [groupB]) => {
+          return Number(groupA.replace("group-", "")) - Number(groupB.replace("group-", ""));
+        });
 
-        Object.entries(currentAnswers).forEach(([group, answer]) => {
+        entries.forEach(([group, answer]) => {
           rows.push([
+            session?.sessionId || "",
+            session?.title || "",
+            session?.question || "",
             group,
             answer.text || "",
             answer.url || "",
@@ -812,6 +1088,8 @@
         link.click();
         URL.revokeObjectURL(url);
       });
+
+      downloadPdfButton.addEventListener("click", downloadAnswersPdf);
 
       googleSignInButton.addEventListener("click", async () => {
         const provider = new GoogleAuthProvider();
